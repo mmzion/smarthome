@@ -1,62 +1,57 @@
 import os
 import json
-import requests
+import base64
 from flask import Flask, request, jsonify
 from google import genai
 from google.genai import types
+import requests
 
 app = Flask(__name__)
-
-# জেমিনির ৩.৫ ফ্ল্যাশ মডেলের জন্য কনফিগারেশন
-# সার্ভারে এনভায়রনমেন্ট ভেরিয়েবল হিসেবে GEMINI_API_KEY সেট করতে হবে
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-
-# আপনার ফায়ারবেস রিয়েলটাইম ডেটাবেসের লিংক
-# অবশ্যই শেষে .json থাকতে হবে
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
     data = request.get_json()
-    command = data.get("text", "")
     
-    if not command:
-        return jsonify({"error": "No command found"}), 400
-        
-    # স্মার্ট হোম ডিভাইসের ম্যাপিং সহ সিস্টেম ইন্সট্রাকশন
-    system_instruction = """
-    You are an AI Smart Home Assistant. 
-    Analyze the user's command and return ONLY a valid JSON object updating the relays.
-    Map the devices as follows:
-    - relay_1: Main Light
-    - relay_2: Dim Light
-    - relay_3: Fan
-    - relay_4: Socket
-    States must be "ON" or "OFF".
-    Example: If the user says "Turn on main light and fan", respond: {"relay_1": "ON", "relay_3": "ON"}
-    """
+    # ইনপুট হিসেবে টেক্সট না অডিও তা চেক করা
+    audio_base64 = data.get("audio", None)
+    command_text = data.get("text", "")
+    
+    contents = []
+    
+    if audio_base64:
+        # অডিও থাকলে সেটাকে বাইনারিতে রূপান্তর করা
+        audio_bytes = base64.b64decode(audio_base64)
+        contents.append({
+            "inline_data": {
+                "mime_type": "audio/wav", 
+                "data": audio_bytes
+            }
+        })
+    elif command_text:
+        contents.append(command_text)
+    else:
+        return jsonify({"error": "No input found"}), 400
+
+    system_instruction = """You are an AI Smart Home Assistant. 
+    Analyze the input and return ONLY a JSON object for relays: 
+    {"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}"""
     
     try:
-        # জেমিনি এপিআই কল
+        # জেমিনি এপিআই কল (অডিও বা টেক্সট উভয়ই হ্যান্ডেল করবে)
         response = client.models.generate_content(
             model='gemini-3.5-flash',
-            contents=command,
+            contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 response_mime_type="application/json",
             )
         )
         
-        # জেমিনির দেওয়া JSON ডেটা পার্স করা
         updates = json.loads(response.text)
-        
-        # ফায়ারবেসে ডেটা আপডেট করা (PATCH ব্যবহার করে নির্দিষ্ট রিলে আপডেট হবে)
-        fb_response = requests.patch(FIREBASE_URL, json=updates)
-        
-        if fb_response.status_code == 200:
-            return jsonify({"status": "Success", "firebase_updated": updates})
-        else:
-            return jsonify({"error": "Firebase update failed"}), 500
+        requests.patch(FIREBASE_URL, json=updates)
+        return jsonify({"status": "Success", "updates": updates})
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
