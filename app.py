@@ -3,27 +3,23 @@ import json
 import base64
 import numpy as np
 from flask import Flask, request, jsonify, render_template_string
-from google import genai
-from google.genai import types
+from groq import Groq
 import requests
 
 app = Flask(__name__)
 
-# কনফিগারেশন
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+# জেমিনি বাদ দিয়ে এখন Groq ক্লায়েন্ট কনফিগারেশন
+# Render-এর Environment-এ GROQ_API_KEY নামে আপনার কী-টি সেভ করবেন
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# গ্লোবাল মেমরি স্টেট (স্মার্ট সেভার মোড)
+# গ্লোবাল মেমরি স্টেট (সবচেয়ে হালকা এবং ফাস্ট)
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 650  # থ্রেশহোল্ড সামান্য বাড়ানো হলো নয়েজ ফিল্টার করতে
-SILENCE_DURATION_CHUNKS = 12  
+SILENCE_THRESHOLD = 600  
+SILENCE_DURATION_CHUNKS = 10  
 silent_chunks_count = 0
 has_speech_started = False
-
-# কোটা সেভার ট্র্যাকিং
-daily_api_calls = 0
-last_command_text = ""
-last_ai_reply = "Hello! Quota Saver Mode Activated. 20 daily calls remaining."
+last_ai_reply = "Hello Zion! Groq Engine is active. Unlimited mode on."
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -31,35 +27,33 @@ DASHBOARD_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart Home Hub (Quota Saver)</title>
+    <title>Zion's Smart Home (Groq Powered)</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
-        h1 { color: #00adb5; border-bottom: 2px solid #393e46; padding-bottom: 10px; margin-bottom: 20px; }
+        h1 { color: #ff9f43; border-bottom: 2px solid #393e46; padding-bottom: 10px; margin-bottom: 20px; }
         .card { background: #1e1e1e; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; }
         .relay-card { background: #2a2a2a; padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; border: 1px solid #333; }
-        .ON { border-color: #00adb5; color: #00adb5; background: rgba(0, 173, 181, 0.1); }
+        .ON { border-color: #ff9f43; color: #ff9f43; background: rgba(255, 159, 67, 0.1); }
         .OFF { border-color: #ff2e63; color: #ff2e63; background: rgba(255, 46, 99, 0.1); }
-        .chat-box { background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #00adb5; margin-bottom: 15px; min-height: 30px; font-size: 16px; }
+        .chat-box { background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #ff9f43; margin-bottom: 15px; min-height: 30px; font-size: 16px; }
         .chat-input-group { display: flex; gap: 10px; }
         .chat-input { flex: 1; padding: 12px; border-radius: 5px; border: 1px solid #393e46; background: #2a2a2a; color: #fff; font-size: 16px; }
-        .chat-btn { padding: 12px 24px; border-radius: 5px; border: none; background: #00adb5; color: #fff; font-size: 16px; cursor: pointer; font-weight: bold; }
+        .chat-btn { padding: 12px 24px; border-radius: 5px; border: none; background: #ff9f43; color: #fff; font-size: 16px; cursor: pointer; font-weight: bold; }
         .chat-btn:disabled { background: #555; }
-        .quota-text { font-size: 12px; color: #ff9f43; margin-top: 5px; text-align: right; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎙️ Smart Home AI Hub</h1>
+        <h1>⚡ Ultra Fast Groq AI Hub</h1>
         
         <div class="card">
             <div class="chat-box" id="ai-response-box">{{ ai_reply }}</div>
             <div class="chat-input-group">
-                <input type="text" id="chat-msg" class="chat-input" placeholder="Type command here..." onkeypress="handleKeyPress(event)">
+                <input type="text" id="chat-msg" class="chat-input" placeholder="Ask anything or control home..." onkeypress="handleKeyPress(event)">
                 <button id="send-btn" class="chat-btn" onclick="sendManualCommand()">Send</button>
             </div>
-            <div class="quota-text" id="quota-display">API Status: Checked</div>
         </div>
 
         <div class="card">
@@ -91,7 +85,6 @@ DASHBOARD_TEMPLATE = """
                     .then(res => res.json())
                     .then(stats => {
                         document.getElementById('ai-response-box').innerText = stats.ai_reply;
-                        document.getElementById('quota-display').innerText = "Today's Server API Calls: " + stats.calls_count + "/20";
                     });
             }
         }
@@ -114,7 +107,7 @@ DASHBOARD_TEMPLATE = """
             })
             .then(res => res.json())
             .then(data => {
-                document.getElementById('ai-response-box').innerText = data.reply || data.error;
+                document.getElementById('ai-response-box').innerText = data.reply;
                 inputField.value = '';
                 inputField.disabled = false;
                 btn.disabled = false;
@@ -131,7 +124,7 @@ DASHBOARD_TEMPLATE = """
         }
 
         function handleKeyPress(e) { if (e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateDashboard, 2000);
+        setInterval(updateDashboard, 1500);
         updateDashboard();
     </script>
 </body>
@@ -145,24 +138,21 @@ def health_check():
 
 @app.route('/server-stats', methods=['GET'])
 def server_stats():
-    global last_ai_reply, daily_api_calls
-    return jsonify({"ai_reply": last_ai_reply, "calls_count": daily_api_calls})
+    global last_ai_reply
+    return jsonify({"ai_reply": last_ai_reply})
 
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
-    global audio_buffer, silent_chunks_count, has_speech_started, last_command_text, daily_api_calls, last_ai_reply
+    global audio_buffer, silent_chunks_count, has_speech_started
     data = request.get_json() or {}
     audio_base64 = data.get("audio")
     command_text = data.get("text", "").strip()
     
-    # ১. টেক্সট ডুপ্লিকেট ফিল্টার (একই জিনিস বারবার পাঠালে এপিআই কল ব্লক করবে)
+    # চ্যাট ইনপুট হ্যান্ডেল করা
     if command_text and not audio_base64:
-        if command_text.lower() == last_command_text.lower():
-            return jsonify({"status": "Ignored", "reply": f"You just said that! (API Saved) -> {last_ai_reply}"}), 200
-        last_command_text = command_text
-        return process_with_gemini(command_text, is_audio=False)
+        return process_with_groq(command_text)
         
-    # ২. অডিও ইনপুট প্রসেস
+    # ESP32 থেকে আসা অডিও ইনপুট প্রসেস করা
     if audio_base64:
         chunk_bytes = base64.b64decode(audio_base64)
         audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
@@ -178,63 +168,50 @@ def handle_command():
                     silent_chunks_count += 1
         
         if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
-            full_audio = bytes(audio_buffer)
-            
-            # স্মার্ট ফিল্টার: অডিও ডাটা যদি ১.৫ সেকেন্ডের চেয়ে ছোট হয় (যেমন < ৪৮০০০ বাইটস), তবে ফালতু নয়েজ মনে করে ড্রপ করবে
-            if len(full_audio) < 45000:
-                audio_buffer = bytearray()
-                silent_chunks_count = 0
-                has_speech_started = False
-                return jsonify({"status": "Dropped", "message": "Audio too short, probably background noise."}), 200
-
+            # দ্রষ্টব্য: Groq সরাসরি অডিও ফাইল ইনপুট নেয় না টেক্সট জেনারেশন মডেলে।
+            # তাই ভয়েস টু টেক্সট (Whisper) অথবা অডিওর জন্য আমরা পরবর্তীতে আরেকটি এপিআই রুট করব।
+            # আপাতত টেক্সট চ্যাট ইন্টারফেস সুপার-ফাস্ট মোডে রান করার জন্য সেট করা হলো।
             audio_buffer = bytearray()
             silent_chunks_count = 0
             has_speech_started = False
-            return process_with_gemini(full_audio, is_audio=True)
+            return jsonify({"status": "Voice features optimization needed for Groq"}), 200
             
         return jsonify({"status": "Streaming"}), 200
 
     return jsonify({"error": "No input"}), 400
 
-def process_with_gemini(contents_data, is_audio=False):
-    global last_ai_reply, daily_api_calls
+def process_with_groq(user_message):
+    global last_ai_reply
     
-    # গুগল ফ্রি টায়ার সেফগার্ড (সার্ভার ২০টার বেশি কল পাঠাবেই না)
-    if daily_api_calls >= 20:
-        last_ai_reply = "⚠️ Daily Google Free Quota (20/20) exhausted! Please try again tomorrow or upgrade API plan."
-        return jsonify({"error": "Quota limit reached", "reply": last_ai_reply}), 429
+    system_instruction = """You are a super fast AI Smart Home Assistant. Reply to user queries warmly.
+    You must output valid JSON data ONLY. Use this strict scheme:
+    {"reply": "your textual conversation here", "relays": {"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}
+    Do not change relay states unless specifically commanded by the user."""
 
-    contents = [{"inline_data": {"mime_type": "audio/wav", "data": contents_data}}] if is_audio else [contents_data]
-    system_instruction = """You are a fast Smart Home AI. Reply friendly and output current relay states.
-    Return ONLY JSON: {"reply": "text response", "relays": {"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}"""
-    
-    for attempt in range(2):
-        try:
-            response = client.models.generate_content(
-                model='gemini-3.5-flash',
-                contents=contents,
-                config=types.GenerateContentConfig(system_instruction=system_instruction, response_mime_type="application/json")
-            )
+    try:
+        # Groq-এর সবচেয়ে শক্তিশালী Llama 3.3 মডেল ব্যবহার করা হয়েছে
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_message}
+            ],
+            response_format={"type": "json_object"} # এটি কোডকে ফাস্ট এবং অবজেক্ট রিটার্ন নিশ্চিত করে
+        )
+        
+        response_text = completion.choices[0].message.content
+        result = json.loads(response_text)
+        
+        last_ai_reply = result.get("reply", "")
+        updates = result.get("relays", {})
+        
+        if updates:
+            requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
             
-            # সফল কলের জন্য কাউন্টার বাড়ানো
-            daily_api_calls += 1
-            
-            result = json.loads(response.text)
-            last_ai_reply = result.get("reply", "")
-            updates = result.get("relays", {})
-            
-            if updates:
-                requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
-                
-            return jsonify({"status": "Success", "reply": last_ai_reply}), 200
-        except Exception as e:
-            if "429" in str(e):
-                last_ai_reply = "API Limit hit. Cooling down..."
-                return jsonify({"error": "Rate limit", "reply": last_ai_reply}), 429
-            if attempt == 0: continue
-            
-    last_ai_reply = "System error, please try again."
-    return jsonify({"error": "Failed"}), 500
+        return jsonify({"status": "Success", "reply": last_ai_reply}), 200
+    except Exception as e:
+        last_ai_reply = f"Groq Error: {str(e)}"
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
