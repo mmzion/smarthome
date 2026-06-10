@@ -2,92 +2,164 @@ import os
 import json
 import base64
 import numpy as np
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from google import genai
 from google.genai import types
 import requests
 
 app = Flask(__name__)
 
-# জেমিনি ক্লায়েন্ট কনফিগারেশন
+# কনফিগারেশন
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# সার্ভার মেমরিতে অডিও বাফার এবং স্টেট ট্র্যাকিং
+# সার্ভার মেমরি স্টেট
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 500  # আপনার মাইক্রোফোনের নয়েজ লেভেল অনুযায়ী এটি পরিবর্তন করতে পারেন (PCM Amplitude)
-SILENCE_DURATION_CHUNKS = 15  # পরপর কতগুলো চঙ্ক নীরব থাকলে ধরে নেওয়া হবে কথা শেষ (প্রায় ১.৫ থেকে ২ সেকেন্ড)
+SILENCE_THRESHOLD = 500  
+SILENCE_DURATION_CHUNKS = 15  
 silent_chunks_count = 0
 has_speech_started = False
+last_received_status = "Waiting for input..."
+
+# ড্যাশবোর্ড UI (HTML/CSS/JS)
+DASHBOARD_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zion's Smart Home Control Panel</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: #00adb5; border-bottom: 2px solid #393e46; padding-bottom: 10px; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; }
+        .relay-card { background: #2a2a2a; padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; border: 1px solid #333; }
+        .ON { border-color: #00adb5; color: #00adb5; background: rgba(0, 173, 181, 0.1); }
+        .OFF { border-color: #ff2e63; color: #ff2e63; background: rgba(255, 46, 99, 0.1); }
+        .status-badge { display: inline-block; padding: 5px 10px; border-radius: 5px; font-size: 14px; background: #393e46; color: #eee; }
+        .listening { background: #00adb5; color: #fff; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Gemini AI Smart Home Hub</h1>
+        
+        <div class="card">
+            <h3>Server & Voice Engine Status</h3>
+            <p><strong>API Connection:</strong> <span class="status-badge" style="background:#4caf50;">Connected (Gemini 3.5 Flash)</span></p>
+            <p><strong>Voice Assistant State:</strong> <span id="v-state" class="status-badge">Idle</span></p>
+            <p><strong>Last Event:</strong> <span id="l-event">{{ last_status }}</span></p>
+        </div>
+
+        <div class="card">
+            <h3>Live Device Matrix (Relays)</h3>
+            <div id="device-grid" class="grid">
+                <div class="relay-card">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function updateDashboard() {
+            // ফায়ারবেস থেকে সরাসরি ডাটা ফেচ করা (সার্ভারের ওপর লোড জিরো রাখতে)
+            fetch('{{ fb_url }}')
+                .then(response => response.json())
+                .then(data => {
+                    const grid = document.getElementById('device-grid');
+                    grid.innerHTML = '';
+                    
+                    // রিলেগুলোর সুন্দর নাম ম্যাপিং
+                    const names = { relay_1: "Main Light", relay_2: "Dim Light", relay_3: "Fan", relay_4: "Socket" };
+                    
+                    for (let key in data) {
+                        if (names[key]) {
+                            const state = data[key];
+                            grid.innerHTML += `<div class="relay-card ${state}">${names[key]}<br><span style="font-size:12px">${state}</span></div>`;
+                        }
+                    }
+                });
+
+            // লাইভ ভয়েস স্ট্যাটাস আপডেট
+            fetch('/server-stats')
+                .then(response => response.json())
+                .then(stats => {
+                    const vState = document.getElementById('v-state');
+                    vState.innerText = stats.listening ? "Listening..." : "Idle";
+                    if(stats.listening) vState.classList.add('listening');
+                    else vState.classList.remove('listening');
+                    document.getElementById('l-event').innerText = stats.last_status;
+                });
+        }
+        
+        setInterval(updateDashboard, 2000); // প্রতি ২ সেকেন্ড পর পর পেজ আপডেট হবে অটোমেটিক
+        updateDashboard();
+    </script>
+</body>
+</html>
+"""
 
 @app.route('/', methods=['GET'])
 def health_check():
-    """cron-job.org এর জন্য হেলথ চেক রুট (404 এরর দূর করার জন্য)"""
-    return "Smart Home Server is running smoothly!", 200
+    """হোম পেজে পুরো সার্ভার ও ডিভাইসের ডিটেইলস প্যানেল দেখাবে"""
+    return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL, last_status=last_received_status), 200
+
+@app.route('/server-stats', methods=['GET'])
+def server_stats():
+    """ফ্রন্টএন্ডের ব্যাকগ্রাউন্ড রিফ্রেশের জন্য মেমরি স্ট্যাটাস এপিআই"""
+    global has_speech_started, last_received_status
+    return jsonify({"listening": has_speech_started, "last_status": last_received_status})
 
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
-    global audio_buffer, silent_chunks_count, has_speech_started
+    global audio_buffer, silent_chunks_count, has_speech_started, last_received_status
     
     data = request.get_json()
     audio_base64 = data.get("audio", None)
     command_text = data.get("text", "")
     
-    # ১. সরাসরি টেক্সট কমান্ড আসলে (টেস্টিং বা প্যানেলের জন্য)
     if command_text and not audio_base64:
+        last_received_status = f"Text command processed: {command_text}"
         return process_with_gemini(command_text, is_audio=False)
         
-    # ২. অনবরত অডিও স্ট্রিম হ্যান্ডেল করা (ESP32 থেকে আসা Chunks)
     if audio_base64:
         chunk_bytes = base64.b64decode(audio_base64)
-        
-        # সার্ভার লেভেলে ভলিউম/এনার্জি অ্যানালাইসিস (ESP32 এর ওপর চাপ কমানোর জন্য)
-        # ধরি ওয়ান-চ্যানেল ১৬-বিট পিসিএম অডিও আসছে
         audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
         
         if len(audio_data) > 0:
             amplitude = np.max(np.abs(audio_data))
             
             if amplitude > SILENCE_THRESHOLD:
-                # শব্দ সনাক্ত হয়েছে, বাফারে যোগ করো
                 audio_buffer.extend(chunk_bytes)
                 silent_chunks_count = 0
                 has_speech_started = True
+                last_received_status = "Capturing active speech..."
             else:
-                # নীরবতা বা সাধারণ নয়েজ
                 if has_speech_started:
-                    audio_buffer.extend(chunk_bytes) # কথার মাঝখানের পজ বা ছোট বিরতি ধরে রাখা
+                    audio_buffer.extend(chunk_bytes)
                     silent_chunks_count += 1
         
-        # ব্যবহারকারী কথা বলা শেষ করেছেন কিনা তা সার্ভার নিজে সিদ্ধান্ত নেবে
         if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
             full_audio = bytes(audio_buffer)
-            
-            # স্টেট রিসেট (পরবর্তী কমান্ডের জন্য মেমরি খালি করা)
             audio_buffer = bytearray()
             silent_chunks_count = 0
             has_speech_started = False
             
-            # জেমিনিকে কল করার জন্য ফাইনাল প্রসেসিং
-            print("Speech ended. Sending accumulated audio to Gemini...")
+            last_received_status = "Analyzing audio via Gemini..."
             return process_with_gemini(full_audio, is_audio=True)
             
         return jsonify({"status": "Streaming", "listening": has_speech_started}), 200
 
     return jsonify({"error": "No valid input found"}), 400
 
-
 def process_with_gemini(contents_data, is_audio=False):
-    """জেমিনি এপিআই কল এবং ফায়ারবেস আপডেট করার সেন্ট্রাল ফাংশন"""
+    global last_received_status
     contents = []
     
     if is_audio:
-        contents.append({
-            "inline_data": {
-                "mime_type": "audio/wav", 
-                "data": contents_data
-            }
-        })
+        contents.append({"inline_data": {"mime_type": "audio/wav", "data": contents_data}})
     else:
         contents.append(contents_data)
 
@@ -99,17 +171,16 @@ def process_with_gemini(contents_data, is_audio=False):
         response = client.models.generate_content(
             model='gemini-3.5-flash',
             contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-            )
+            config=types.GenerateContentConfig(system_instruction=system_instruction, response_mime_type="application/json")
         )
         
         updates = json.loads(response.text)
         requests.patch(FIREBASE_URL, json=updates)
+        last_received_status = f"Success! Database updated: {response.text}"
         return jsonify({"status": "Success", "updates": updates}), 200
             
     except Exception as e:
+        last_received_status = f"Error: {str(e)}"
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
