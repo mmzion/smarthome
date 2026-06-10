@@ -10,21 +10,22 @@ import io
 
 app = Flask(__name__)
 
-# Groq Config
+# Groq Configuration
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# Global States
+# Global Hardware & Stream States
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 600  
-SILENCE_DURATION_CHUNKS = 10  
+SILENCE_THRESHOLD = 700  # Optimized to filter out background room noise
+SILENCE_DURATION_CHUNKS = 12  
 silent_chunks_count = 0
 has_speech_started = False
 
-# Chat & Connection Tracking
+# Chat History & Connection Tracking
 chat_history = []
 MAX_HISTORY_LENGTH = 5 
 last_esp32_seen = 0  
+ui_pending_messages = []
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -189,8 +190,8 @@ DASHBOARD_TEMPLATE = """
                             if(msg.type === 'voice_start') {
                                 chatWindow.innerHTML += `<div class="msg system-msg"><i class="fas fa-microphone"></i> ESP32 Audio Streaming...</div>`;
                             } else {
-                                chatWindow.innerHTML += `<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>${msg.user}</div>`;
-                                chatWindow.innerHTML += `<div class="msg ai-msg">${msg.ai}</div>`;
+                                chatWindow.innerHTML += `<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>\${msg.user}</div>`;
+                                chatWindow.innerHTML += `<div class="msg ai-msg">\${msg.ai}</div>`;
                             }
                         });
                         chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -233,8 +234,6 @@ DASHBOARD_TEMPLATE = """
 </html>
 """
 
-ui_pending_messages = []
-
 @app.route('/', methods=['GET'])
 def home():
     return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL), 200
@@ -263,7 +262,7 @@ def handle_command():
         return process_with_groq(command_text, source="manual")
         
     if audio_base64:
-        last_esp32_seen = time.time()  # Fix applied here (standard assignment)
+        last_esp32_seen = time.time()  
         
         chunk_bytes = base64.b64decode(audio_base64)
         audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
@@ -304,12 +303,12 @@ def transcribe_and_process(audio_bytes):
         header[8:12] = b'WAVE'
         header[12:16] = b'fmt '
         header[16:20] = (16).to_bytes(4, 'little')
-        header[20:22] = (1).to_bytes(2, 'little')
-        header[22:24] = (1).to_bytes(2, 'little')
-        header[24:28] = (16000).to_bytes(4, 'little')
-        header[28:32] = (32000).to_bytes(4, 'little')
-        header[32:34] = (2).to_bytes(2, 'little')
-        header[34:36] = (16).to_bytes(2, 'little')
+        header[20:22] = (1).to_bytes(2, 'little')      
+        header[22:24] = (1).to_bytes(2, 'little')      
+        header[24:28] = (16000).to_bytes(4, 'little')  
+        header[28:32] = (32000).to_bytes(4, 'little')  
+        header[32:34] = (2).to_bytes(2, 'little')      
+        header[34:36] = (16).to_bytes(2, 'little')     
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
         
@@ -321,8 +320,16 @@ def transcribe_and_process(audio_bytes):
             model="whisper-large-v3",
             language="en"
         )
-        return process_with_groq(transcription.text, source="voice")
+        
+        user_text = transcription.text.strip() if transcription.text else ""
+        print(f"DEBUG - Whisper Decoded: {user_text}")
+        
+        if not user_text or len(user_text) < 2:
+            return jsonify({"status": "Ignored", "reason": "Empty voice data"}), 200
+            
+        return process_with_groq(user_text, source="voice")
     except Exception as e:
+        print(f"DEBUG - Whisper Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 def process_with_groq(user_message, source="manual"):
@@ -334,13 +341,22 @@ def process_with_groq(user_message, source="manual"):
         if res.status_code == 200 and res.json(): current_relays = res.json()
     except: pass
 
-    system_instruction = f"""You are RoomX AI, a high-end smart home assistant. 
-    Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
-    Current States: {json.dumps(current_relays)}
-    Rules: 
-    1. Respond in friendly professional tone.
-    2. Maintain relay states unless told otherwise.
-    3. Return ONLY JSON: {{"reply": "text", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
+    system_instruction = f"""You are RoomX AI, an elite smart home operating system designed by Zion. 
+    
+    Hardware Mapping Layout:
+    - relay_1: Main Light
+    - relay_2: Dim Light
+    - relay_3: Fan
+    - relay_4: Socket
+
+    CURRENT RELAY STATES (CRITICAL):
+    {json.dumps(current_relays)}
+
+    Strict Rules:
+    1. Look closely at the user text input. If it contains background noise interpretations or tiny grammatical flaws from audio conversions, extract the main target device ('light', 'fan', 'socket') and state command ('on', 'off').
+    2. Maintain all other relay assignments exactly as they are in the CURRENT RELAY STATES unless specified otherwise. Do not blindly shut down active appliances.
+    3. Output JSON ONLY. Do not wrap inside code block ticks. Use this exact schema:
+    {{"reply": "your text response here", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
 
     messages = [{"role": "system", "content": system_instruction}]
     for h in chat_history:
@@ -356,7 +372,7 @@ def process_with_groq(user_message, source="manual"):
         )
         
         result = json.loads(completion.choices[0].message.content)
-        ai_reply = result.get("reply", "Done.")
+        ai_reply = result.get("reply", "Command executed.")
         updates = result.get("relays", current_relays)
         
         requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
