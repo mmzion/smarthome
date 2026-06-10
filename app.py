@@ -14,15 +14,16 @@ app = Flask(__name__)
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# সার্ভার মেমরি স্টেট (গ্লোবাল ভেরিয়েবল)
+# সার্ভার মেমরি স্টেট
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 500  # মাইক্রোফোনের নয়েজ লেভেল অনুযায়ী এটি পরিবর্তন করতে পারেন
-SILENCE_DURATION_CHUNKS = 15  # পরপর কতগুলো চঙ্ক নীরব থাকলে ধরে নেওয়া হবে কথা শেষ (প্রায় ১.৫ - ২ সেকেন্ড)
+SILENCE_THRESHOLD = 500  
+SILENCE_DURATION_CHUNKS = 15  
 silent_chunks_count = 0
 has_speech_started = False
 last_received_status = "Waiting for input..."
+last_ai_reply = "Hello Zion! I am ready to chat and manage your smart home." # ডিফল্ট রিপ্লাই
 
-# ড্যাশবোর্ড UI (HTML/CSS/JS)
+# ড্যাশবোর্ড UI (চ্যাট রিপ্লাই বক্স সহ উন্নত করা হয়েছে)
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -42,6 +43,8 @@ DASHBOARD_TEMPLATE = """
         .status-badge { display: inline-block; padding: 5px 10px; border-radius: 5px; font-size: 14px; background: #393e46; color: #eee; }
         .listening { background: #00adb5; color: #fff; animation: pulse 1.5s infinite; }
         
+        /* চ্যাট বাবল স্টাইল */
+        .chat-box { background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #00adb5; margin-bottom: 15px; min-height: 40px; font-size: 16px; line-height: 1.5; }
         .chat-input-group { display: flex; gap: 10px; margin-top: 15px; }
         .chat-input { flex: 1; padding: 12px; border-radius: 5px; border: 1px solid #393e46; background: #2a2a2a; color: #fff; font-size: 16px; }
         .chat-input:focus { border-color: #00adb5; outline: none; }
@@ -64,10 +67,10 @@ DASHBOARD_TEMPLATE = """
         </div>
 
         <div class="card">
-            <h3>💬 Manual Chat with Gemini</h3>
-            <p style="font-size: 14px; color: #aaa;">Type a command to control your home (e.g., "turn on main light and fan")</p>
+            <h3>💬 Chat with Gemini</h3>
+            <div class="chat-box" id="ai-response-box">{{ ai_reply }}</div>
             <div class="chat-input-group">
-                <input type="text" id="chat-msg" class="chat-input" placeholder="Type your command here..." onkeypress="handleKeyPress(event)">
+                <input type="text" id="chat-msg" class="chat-input" placeholder="Say hi or give a command..." onkeypress="handleKeyPress(event)">
                 <button id="send-btn" class="chat-btn" onclick="sendManualCommand()">Send</button>
             </div>
         </div>
@@ -82,7 +85,6 @@ DASHBOARD_TEMPLATE = """
 
     <script>
         function updateDashboard() {
-            // ফায়ারবেস থেকে লাইভ রিলে ডাটা ফেচ করা
             fetch('{{ fb_url }}')
                 .then(response => response.json())
                 .then(data => {
@@ -98,7 +100,6 @@ DASHBOARD_TEMPLATE = """
                     }
                 });
 
-            // লাইভ ভয়েস স্ট্যাটাস এবং লাস্ট ইভেন্ট আপডেট
             fetch('/server-stats')
                 .then(response => response.json())
                 .then(stats => {
@@ -107,6 +108,7 @@ DASHBOARD_TEMPLATE = """
                     if(stats.listening) vState.classList.add('listening');
                     else vState.classList.remove('listening');
                     document.getElementById('l-event').innerText = stats.last_status;
+                    document.getElementById('ai-response-box').innerText = stats.ai_reply;
                 });
         }
 
@@ -157,14 +159,13 @@ DASHBOARD_TEMPLATE = """
 
 @app.route('/', methods=['GET'])
 def health_check():
-    """হোম পেজে পুরো সার্ভার ও ডিভাইসের ডিটেইলস প্যানেল দেখাবে (cron-job.org এর 404 ফিক্স)"""
-    return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL, last_status=last_received_status), 200
+    global last_received_status, last_ai_reply
+    return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL, last_status=last_received_status, ai_reply=last_ai_reply), 200
 
 @app.route('/server-stats', methods=['GET'])
 def server_stats():
-    """ফ্রন্টএন্ডের ব্যাকগ্রাউন্ড রিফ্রেসের জন্য মেমরি স্ট্যাটাস এপিআই"""
-    global has_speech_started, last_received_status
-    return jsonify({"listening": has_speech_started, "last_status": last_received_status})
+    global has_speech_started, last_received_status, last_ai_reply
+    return jsonify({"listening": has_speech_started, "last_status": last_received_status, "ai_reply": last_ai_reply})
 
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
@@ -174,12 +175,10 @@ def handle_command():
     audio_base64 = data.get("audio", None)
     command_text = data.get("text", "")
     
-    # ১. ম্যানুয়াল টেক্সট কমান্ড হ্যান্ডেল করা
     if command_text and not audio_base64:
-        last_received_status = f"Manual command: '{command_text}'"
+        last_received_status = f"Manual command received."
         return process_with_gemini(command_text, is_audio=False)
         
-    # ২. ESP32 থেকে আসা অডিও স্ট্রিম হ্যান্ডেল করা (অনবরত লুপের জন্য)
     if audio_base64:
         chunk_bytes = base64.b64decode(audio_base64)
         audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
@@ -197,11 +196,8 @@ def handle_command():
                     audio_buffer.extend(chunk_bytes)
                     silent_chunks_count += 1
         
-        # কথা শেষ হওয়ার সিদ্ধান্ত সার্ভার নিজে নেবে
         if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
             full_audio = bytes(audio_buffer)
-            
-            # স্টেট রিসেট (পরবর্তী ভয়েস কমান্ডের জন্য)
             audio_buffer = bytearray()
             silent_chunks_count = 0
             has_speech_started = False
@@ -214,8 +210,7 @@ def handle_command():
     return jsonify({"error": "No valid input found"}), 400
 
 def process_with_gemini(contents_data, is_audio=False):
-    """জেমিনি এপিআই কল করার সেন্ট্রাল ফাংশন (Exponential Backoff অটো-রিট্রাই সহ)"""
-    global last_received_status
+    global last_received_status, last_ai_reply
     contents = []
     
     if is_audio:
@@ -223,37 +218,59 @@ def process_with_gemini(contents_data, is_audio=False):
     else:
         contents.append(contents_data)
 
+    # নতুন সিস্টেম ইন্সট্রাকশন: এটি জেমিনিকে টেক্সট রিপ্লাই এবং রিলে কন্ট্রোল দুটোই একসাথে করতে বাধ্য করবে
     system_instruction = """You are an AI Smart Home Assistant. 
-    Analyze the input and return ONLY a JSON object for relays: 
-    {"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}"""
+    You must always reply in a friendly manner. You can chat casually, answer questions, or process smart home commands.
+    You must respond ONLY in the following JSON format:
+    {
+      "reply": "Your conversational text response here to the user",
+      "relays": {"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}
+    }
+    Important: If the user is just chatting (e.g., 'hi', 'how are you') and NOT giving a home control command, do not change the relay states. Instead, fetch current relay states from the environment or default to keeping them as they are. Keep the exact format."""
     
-    max_retries = 3      # সর্বোচ্চ ৩ বার চেষ্টা করবে
-    retry_delay = 2      # প্রথমবার বিরতি ২ সেকেন্ড
+    # ফায়ারবেস থেকে কারেন্ট রিলে স্টেট নিয়ে আসা (যাতে চ্যাট করার সময় লাইট অফ না হয়ে যায়)
+    current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
+    try:
+        fb_res = requests.get(FIREBASE_URL)
+        if fb_res.status_code == 200 and fb_res.json():
+            current_relays = fb_res.json()
+    except:
+        pass
+
+    # জেমিনিকে কারেন্ট স্টেট জানিয়ে দেওয়া যাতে সে চ্যাটের সময় এগুলো পরিবর্তন না করে
+    full_instruction = f"{system_instruction}\nCurrent Relays State: {json.dumps(current_relays)}"
+
+    max_retries = 3      
+    retry_delay = 2      
     
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model='gemini-3.5-flash',
                 contents=contents,
-                config=types.GenerateContentConfig(system_instruction=system_instruction, response_mime_type="application/json")
+                config=types.GenerateContentConfig(system_instruction=full_instruction, response_mime_type="application/json")
             )
             
-            updates = json.loads(response.text)
+            result = json.loads(response.text)
+            
+            # ১. টেক্সট রিপ্লাই আলাদা করা
+            last_ai_reply = result.get("reply", "Command processed.")
+            
+            # ২. রিলে স্টেট আপডেট করা
+            updates = result.get("relays", current_relays)
             requests.patch(FIREBASE_URL, json=updates)
-            last_received_status = f"Success! Output: {response.text}"
-            return jsonify({"status": "Success", "updates": updates}), 200
+            
+            last_received_status = "Success! Dashboard and Firebase updated."
+            return jsonify({"status": "Success", "reply": last_ai_reply, "updates": updates}), 200
                 
         except Exception as e:
-            # যদি এররটি গুগলের ওভার-ট্রাফিক (503) বা রেট লিমিটের (429) কারণে হয়
             if "503" in str(e) or "429" in str(e):
                 if attempt < max_retries - 1:
                     last_received_status = f"Gemini busy (503). Retrying in {retry_delay}s... (Attempt {attempt + 1}/{max_retries})"
-                    print(last_received_status)
                     time.sleep(retry_delay)
-                    retry_delay *= 2  # প্রতিবার ওয়েটিং টাইম দ্বিগুণ হবে (২ সেকেন্ড, ৪ সেকেন্ড...)
+                    retry_delay *= 2  
                     continue
             
-            # ৩ বার ট্রাই করার পরও ফেইল হলে বা অন্য কোনো সাধারণ কোড এরর হলে ফাইনাল এরর দেবে
             last_received_status = f"Error after {attempt + 1} attempts: {str(e)}"
             return jsonify({"error": str(e)}), 500
 
