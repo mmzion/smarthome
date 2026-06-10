@@ -21,7 +21,7 @@ silent_chunks_count = 0
 has_speech_started = False
 last_received_status = "Waiting for input..."
 
-# ড্যাশবোর্ড UI (HTML/CSS/JS)
+# ড্যাশবোর্ড UI (HTML/CSS/JS) - চ্যাট অপশন সহ
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -40,6 +40,15 @@ DASHBOARD_TEMPLATE = """
         .OFF { border-color: #ff2e63; color: #ff2e63; background: rgba(255, 46, 99, 0.1); }
         .status-badge { display: inline-block; padding: 5px 10px; border-radius: 5px; font-size: 14px; background: #393e46; color: #eee; }
         .listening { background: #00adb5; color: #fff; animation: pulse 1.5s infinite; }
+        
+        /* চ্যাট সেকশনের স্টাইল */
+        .chat-input-group { display: flex; gap: 10px; margin-top: 15px; }
+        .chat-input { flex: 1; padding: 12px; border-radius: 5px; border: 1px solid #393e46; background: #2a2a2a; color: #fff; font-size: 16px; }
+        .chat-input:focus { border-color: #00adb5; outline: none; }
+        .chat-btn { padding: 12px 24px; border-radius: 5px; border: none; background: #00adb5; color: #fff; font-size: 16px; cursor: pointer; font-weight: bold; }
+        .chat-btn:hover { background: #008c9e; }
+        .chat-btn:disabled { background: #555; cursor: not-allowed; }
+        
         @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
     </style>
 </head>
@@ -55,6 +64,15 @@ DASHBOARD_TEMPLATE = """
         </div>
 
         <div class="card">
+            <h3>💬 Manual Chat with Gemini</h3>
+            <p style="font-size: 14px; color: #aaa;">Type a command to control your home (e.g., "turn on main light and fan")</p>
+            <div class="chat-input-group">
+                <input type="text" id="chat-msg" class="chat-input" placeholder="Type your command here..." onkeypress="handleKeyPress(event)">
+                <button id="send-btn" class="chat-btn" onclick="sendManualCommand()">Send</button>
+            </div>
+        </div>
+
+        <div class="card">
             <h3>Live Device Matrix (Relays)</h3>
             <div id="device-grid" class="grid">
                 <div class="relay-card">Loading...</div>
@@ -64,14 +82,12 @@ DASHBOARD_TEMPLATE = """
 
     <script>
         function updateDashboard() {
-            // ফায়ারবেস থেকে সরাসরি ডাটা ফেচ করা (সার্ভারের ওপর লোড জিরো রাখতে)
+            // ফায়ারবেস থেকে লাইভ রিলে ডাটা ফেচ করা
             fetch('{{ fb_url }}')
                 .then(response => response.json())
                 .then(data => {
                     const grid = document.getElementById('device-grid');
                     grid.innerHTML = '';
-                    
-                    // রিলেগুলোর সুন্দর নাম ম্যাপিং
                     const names = { relay_1: "Main Light", relay_2: "Dim Light", relay_3: "Fan", relay_4: "Socket" };
                     
                     for (let key in data) {
@@ -82,7 +98,7 @@ DASHBOARD_TEMPLATE = """
                     }
                 });
 
-            // লাইভ ভয়েস স্ট্যাটাস আপডেট
+            // লাইভ ভয়েস স্ট্যাটাস এবং লাস্ট ইভেন্ট আপডেট
             fetch('/server-stats')
                 .then(response => response.json())
                 .then(stats => {
@@ -93,8 +109,49 @@ DASHBOARD_TEMPLATE = """
                     document.getElementById('l-event').innerText = stats.last_status;
                 });
         }
+
+        function sendManualCommand() {
+            const inputField = document.getElementById('chat-msg');
+            const btn = document.getElementById('send-btn');
+            const command = inputField.value.trim();
+            
+            if (!command) return;
+
+            // বোতাম ও ইনপুট সাময়িকভাবে ডিজেবল করা
+            inputField.disabled = true;
+            btn.disabled = true;
+            btn.innerText = "Sending...";
+
+            // সার্ভারে POST রিকোয়েস্ট পাঠানো
+            fetch('/voice-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: command })
+            })
+            .then(response => response.json())
+            .then(data => {
+                // ইনপুট ক্লিয়ার ও রিসেট করা
+                inputField.value = '';
+                inputField.disabled = false;
+                btn.disabled = false;
+                btn.innerText = "Send";
+                updateDashboard();
+            })
+            .catch(err => {
+                console.error(err);
+                inputField.disabled = false;
+                btn.disabled = false;
+                btn.innerText = "Send";
+            });
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendManualCommand();
+            }
+        }
         
-        setInterval(updateDashboard, 2000); // প্রতি ২ সেকেন্ড পর পর পেজ আপডেট হবে অটোমেটিক
+        setInterval(updateDashboard, 2000); // প্রতি ২ সেকেন্ড পর পর পেজ আপডেট হবে
         updateDashboard();
     </script>
 </body>
@@ -103,12 +160,10 @@ DASHBOARD_TEMPLATE = """
 
 @app.route('/', methods=['GET'])
 def health_check():
-    """হোম পেজে পুরো সার্ভার ও ডিভাইসের ডিটেইলস প্যানেল দেখাবে"""
     return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL, last_status=last_received_status), 200
 
 @app.route('/server-stats', methods=['GET'])
 def server_stats():
-    """ফ্রন্টএন্ডের ব্যাকগ্রাউন্ড রিফ্রেশের জন্য মেমরি স্ট্যাটাস এপিআই"""
     global has_speech_started, last_received_status
     return jsonify({"listening": has_speech_started, "last_status": last_received_status})
 
@@ -120,10 +175,12 @@ def handle_command():
     audio_base64 = data.get("audio", None)
     command_text = data.get("text", "")
     
+    # ম্যানুয়াল টেক্সট কমান্ড হ্যান্ডেল করা
     if command_text and not audio_base64:
-        last_received_status = f"Text command processed: {command_text}"
+        last_received_status = f"Manual command: '{command_text}'"
         return process_with_gemini(command_text, is_audio=False)
         
+    # ESP32 থেকে আসা অডিও স্ট্রিম হ্যান্ডেল করা
     if audio_base64:
         chunk_bytes = base64.b64decode(audio_base64)
         audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
@@ -176,7 +233,7 @@ def process_with_gemini(contents_data, is_audio=False):
         
         updates = json.loads(response.text)
         requests.patch(FIREBASE_URL, json=updates)
-        last_received_status = f"Success! Database updated: {response.text}"
+        last_received_status = f"Success! Output: {response.text}"
         return jsonify({"status": "Success", "updates": updates}), 200
             
     except Exception as e:
