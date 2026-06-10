@@ -8,17 +8,15 @@ import requests
 
 app = Flask(__name__)
 
-# Groq ক্লায়েন্ট কনফিগারেশন
+# Groq ক্লায়েন্ট
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# গ্লোবাল মেমরি স্টেট
+# গ্লোবাল স্টেট
+chat_history = []
+MAX_HISTORY_LENGTH = 5 
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 600  
-SILENCE_DURATION_CHUNKS = 10  
-silent_chunks_count = 0
 has_speech_started = False
-last_ai_reply = "Hello Zion! Hardware mapping updated. Ready to control appliances."
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -26,198 +24,314 @@ DASHBOARD_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zion's Smart Home (Groq Powered)</title>
+    <title>RoomX | Advanced Smart Home Hub</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; }
-        h1 { color: #ff9f43; border-bottom: 2px solid #393e46; padding-bottom: 10px; margin-bottom: 20px; }
-        .card { background: #1e1e1e; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; }
-        .relay-card { background: #2a2a2a; padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; border: 1px solid #333; }
-        .ON { border-color: #ff9f43; color: #ff9f43; background: rgba(255, 159, 67, 0.1); }
-        .OFF { border-color: #ff2e63; color: #ff2e63; background: rgba(255, 46, 99, 0.1); }
-        .chat-box { background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #ff9f43; margin-bottom: 15px; min-height: 30px; font-size: 16px; }
-        .chat-input-group { display: flex; gap: 10px; }
-        .chat-input { flex: 1; padding: 12px; border-radius: 5px; border: 1px solid #393e46; background: #2a2a2a; color: #fff; font-size: 16px; }
-        .chat-btn { padding: 12px 24px; border-radius: 5px; border: none; background: #ff9f43; color: #fff; font-size: 16px; cursor: pointer; font-weight: bold; }
-        .chat-btn:disabled { background: #555; }
+        :root {
+            --bg: #0f0c29;
+            --gradient: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+            --purple-main: #9d50bb;
+            --purple-dark: #2d1b4d;
+            --card-bg: rgba(255, 255, 255, 0.05);
+            --text: #f5f5f5;
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { 
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+            background: var(--bg); 
+            background-image: radial-gradient(circle at 50% 50%, #1a1a3a 0%, #0f0c29 100%);
+            color: var(--text); 
+            margin: 0; 
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        /* Header */
+        header {
+            width: 100%;
+            padding: 20px;
+            text-align: center;
+            background: rgba(0,0,0,0.3);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 20px;
+        }
+        header h1 { 
+            margin: 0; 
+            font-size: 28px; 
+            letter-spacing: 2px; 
+            background: linear-gradient(to right, #fff, var(--purple-main));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 800;
+        }
+
+        .container { 
+            width: 95%; 
+            max-width: 900px; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 20px; 
+            padding-bottom: 40px;
+        }
+
+        /* Relay Section */
+        .grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); 
+            gap: 15px; 
+            width: 100%;
+        }
+        .relay-card { 
+            background: var(--card-bg); 
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px; 
+            padding: 20px; 
+            text-align: center; 
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .relay-card i { font-size: 30px; margin-bottom: 10px; display: block; transition: 0.3s; }
+        .relay-card span { font-size: 14px; font-weight: 600; opacity: 0.8; }
+        .relay-card .status { font-size: 11px; margin-top: 5px; display: block; letter-spacing: 1px; }
+
+        .relay-card.ON { 
+            background: rgba(157, 80, 187, 0.2); 
+            border-color: var(--purple-main);
+            box-shadow: 0 0 15px rgba(157, 80, 187, 0.3);
+        }
+        .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
+        .relay-card.OFF { opacity: 0.6; }
+
+        /* Chat Section */
+        .chat-card {
+            background: var(--card-bg);
+            border-radius: 25px;
+            border: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            flex-direction: column;
+            height: 450px;
+            overflow: hidden;
+        }
+        .chat-window {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            scrollbar-width: thin;
+            scrollbar-color: var(--purple-main) transparent;
+        }
+        .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
+        .user-msg { 
+            align-self: flex-end; 
+            background: var(--purple-main); 
+            color: white; 
+            border-bottom-right-radius: 4px;
+        }
+        .ai-msg { 
+            align-self: flex-start; 
+            background: rgba(255,255,255,0.1); 
+            color: #eee; 
+            border-bottom-left-radius: 4px;
+        }
+
+        .input-area {
+            padding: 15px;
+            background: rgba(0,0,0,0.2);
+            display: flex;
+            gap: 10px;
+        }
+        .input-area input {
+            flex: 1;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 50px;
+            padding: 12px 20px;
+            color: white;
+            outline: none;
+            font-size: 15px;
+        }
+        .input-area input:focus { border-color: var(--purple-main); }
+        .input-area button {
+            background: var(--purple-main);
+            color: white;
+            border: none;
+            width: 45px;
+            height: 45px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: 0.3s;
+        }
+        .input-area button:hover { transform: scale(1.1); }
+        .input-area button:disabled { background: #555; }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            header h1 { font-size: 22px; }
+            .grid { grid-template-columns: repeat(2, 1fr); }
+            .chat-card { height: 400px; }
+        }
     </style>
 </head>
 <body>
+    <header>
+        <h1>RoomX</h1>
+    </header>
+
     <div class="container">
-        <h1>⚡ Ultra Fast Groq AI Hub</h1>
-        
-        <div class="card">
-            <div class="chat-box" id="ai-response-box">{{ ai_reply }}</div>
-            <div class="chat-input-group">
-                <input type="text" id="chat-msg" class="chat-input" placeholder="Ask anything or control home..." onkeypress="handleKeyPress(event)">
-                <button id="send-btn" class="chat-btn" onclick="sendManualCommand()">Send</button>
+        <div id="device-grid" class="grid">
+            <div class="relay-card OFF">
+                <i class="fas fa-spinner fa-spin"></i>
+                <span>Syncing...</span>
             </div>
         </div>
 
-        <div class="card">
-            <h3>Live Relays</h3>
-            <div id="device-grid" class="grid">
-                <div class="relay-card">Loading...</div>
+        <div class="chat-card">
+            <div class="chat-window" id="chat-window">
+                <div class="msg ai-msg">Welcome to RoomX. I am your intelligent purple engine. How can I help?</div>
+            </div>
+            <div class="input-area">
+                <input type="text" id="chat-msg" placeholder="Tell RoomX to do something..." onkeypress="handleKeyPress(event)">
+                <button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button>
             </div>
         </div>
     </div>
 
     <script>
+        const chatWindow = document.getElementById('chat-window');
         let isSending = false;
-        function updateDashboard() {
+
+        function updateUI() {
             fetch('{{ fb_url }}')
                 .then(res => res.json())
                 .then(data => {
                     const grid = document.getElementById('device-grid');
                     grid.innerHTML = '';
-                    const names = { relay_1: "Main Light", relay_2: "Dim Light", relay_3: "Fan", relay_4: "Socket" };
-                    for (let key in data) {
-                        if (names[key]) {
-                            grid.innerHTML += `<div class="relay-card ${data[key]}">${names[key]}<br><span style="font-size:12px">${data[key]}</span></div>`;
-                        }
-                    }
-                });
+                    const devices = [
+                        { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
+                        { id: "relay_2", name: "Dim Light", icon: "fa-moon" },
+                        { id: "relay_3", name: "Fan", icon: "fa-fan" },
+                        { id: "relay_4", name: "Socket", icon: "fa-plug" }
+                    ];
 
-            if(!isSending) {
-                fetch('/server-stats')
-                    .then(res => res.json())
-                    .then(stats => {
-                        document.getElementById('ai-response-box').innerText = stats.ai_reply;
+                    devices.forEach(dev => {
+                        const state = data[dev.id] || "OFF";
+                        grid.innerHTML += `
+                            <div class="relay-card ${state}">
+                                <i class="fas ${dev.icon} ${state === 'ON' && dev.id === 'relay_3' ? 'fa-spin' : ''}"></i>
+                                <span>${dev.name}</span>
+                                <span class="status">${state}</span>
+                            </div>
+                        `;
                     });
-            }
+                });
         }
 
         function sendManualCommand() {
-            const inputField = document.getElementById('chat-msg');
+            const input = document.getElementById('chat-msg');
             const btn = document.getElementById('send-btn');
-            const command = inputField.value.trim();
-            if (!command) return;
+            const cmd = input.value.trim();
+            if(!cmd || isSending) return;
 
             isSending = true;
-            inputField.disabled = true;
-            btn.disabled = true;
-            btn.innerText = "Wait...";
+            input.disabled = true; btn.disabled = true;
+            
+            chatWindow.innerHTML += `<div class="msg user-msg">${cmd}</div>`;
+            chatWindow.scrollTop = chatWindow.scrollHeight;
 
             fetch('/voice-command', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: command })
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ text: cmd })
             })
             .then(res => res.json())
             .then(data => {
-                document.getElementById('ai-response-box').innerText = data.reply;
-                inputField.value = '';
-                inputField.disabled = false;
-                btn.disabled = false;
-                btn.innerText = "Send";
+                chatWindow.innerHTML += `<div class="msg ai-msg">${data.reply}</div>`;
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+                input.value = '';
+                input.disabled = false; btn.disabled = false;
                 isSending = false;
-                updateDashboard();
+                updateUI();
             })
             .catch(() => {
-                inputField.disabled = false;
-                btn.disabled = false;
-                btn.innerText = "Send";
-                isSending = false;
+                chatWindow.innerHTML += `<div class="msg ai-msg" style="color: #ff2e63;">Connection Lost.</div>`;
+                input.disabled = false; btn.disabled = false; isSending = false;
             });
         }
 
-        function handleKeyPress(e) { if (e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateDashboard, 1500);
-        updateDashboard();
+        function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
+        setInterval(updateUI, 2000);
+        updateUI();
     </script>
 </body>
 </html>
 """
 
 @app.route('/', methods=['GET'])
-def health_check():
-    global last_ai_reply
-    return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL, ai_reply=last_ai_reply), 200
-
-@app.route('/server-stats', methods=['GET'])
-def server_stats():
-    global last_ai_reply
-    return jsonify({"ai_reply": last_ai_reply})
+def home():
+    return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL), 200
 
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
-    global audio_buffer, silent_chunks_count, has_speech_started
     data = request.get_json() or {}
-    audio_base64 = data.get("audio")
-    command_text = data.get("text", "").strip()
-    
-    if command_text and not audio_base64:
-        return process_with_groq(command_text)
-        
-    if audio_base64:
-        chunk_bytes = base64.b64decode(audio_base64)
-        audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
-        
-        if len(audio_data) > 0:
-            if np.max(np.abs(audio_data)) > SILENCE_THRESHOLD:
-                audio_buffer.extend(chunk_bytes)
-                silent_chunks_count = 0
-                has_speech_started = True
-            else:
-                if has_speech_started:
-                    audio_buffer.extend(chunk_bytes)
-                    silent_chunks_count += 1
-        
-        if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
-            audio_buffer = bytearray()
-            silent_chunks_count = 0
-            has_speech_started = False
-            return jsonify({"status": "Voice features optimization needed for Groq"}), 200
-            
-        return jsonify({"status": "Streaming"}), 200
-
-    return jsonify({"error": "No input"}), 400
+    text = data.get("text", "").strip()
+    if text:
+        return process_with_groq(text)
+    return jsonify({"error": "No text"}), 400
 
 def process_with_groq(user_message):
-    global last_ai_reply
+    global chat_history
     
-    # প্রম্পট ইঞ্জিনিয়ারিং এর মাধ্যমে হার্ডওয়্যার ম্যাপিং নিখুঁত করা হয়েছে
-    system_instruction = """You are a super fast AI Smart Home Assistant. Reply to user queries warmly.
-    
-    Here is the exact hardware mapping of Zion's house:
-    - relay_1: Main Light
-    - relay_2: Dim Light
-    - relay_3: Fan
-    - relay_4: Socket
+    # কারেন্ট স্টেট ফেচ
+    current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
+    try:
+        res = requests.get(FIREBASE_URL, timeout=1.5)
+        if res.status_code == 200 and res.json(): current_relays = res.json()
+    except: pass
 
-    When the user asks to control an appliance, you must update the correct relay based on the mapping above.
-    For example, if the user says "turn on socket", set relay_4 to "ON".
-    If the user clarifies mapping like "socket is in the relay 4", acknowledge it nicely and make sure relay_4 matches the user's intent.
-    
-    You must output valid JSON data ONLY. Use this strict scheme:
-    {"reply": "your textual conversation here", "relays": {"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}
-    
-    Do not change relay states unless specifically commanded by the user. Maintain the current states if they are not explicitly mentioned in the turn ON/OFF command."""
+    system_instruction = f"""You are RoomX AI, a high-end smart home assistant. 
+    Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
+    Current States: {json.dumps(current_relays)}
+    Rules: 
+    1. Respond in friendly professional tone.
+    2. Maintain relay states unless told otherwise.
+    3. Return ONLY JSON: {{"reply": "text", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
+
+    messages = [{"role": "system", "content": system_instruction}]
+    for h in chat_history:
+        messages.append({"role": "user", "content": h["user"]})
+        messages.append({"role": "assistant", "content": h["ai"]})
+    messages.append({"role": "user", "content": user_message})
 
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_message}
-            ],
+            messages=messages,
             response_format={"type": "json_object"}
         )
         
-        response_text = completion.choices[0].message.content
-        result = json.loads(response_text)
+        result = json.loads(completion.choices[0].message.content)
+        ai_reply = result.get("reply", "Done.")
+        updates = result.get("relays", current_relays)
         
-        last_ai_reply = result.get("reply", "")
-        updates = result.get("relays", {})
+        requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
         
-        if updates:
-            requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
+        chat_history.append({"user": user_message, "ai": ai_reply})
+        if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
             
-        return jsonify({"status": "Success", "reply": last_ai_reply}), 200
+        return jsonify({"status": "Success", "reply": ai_reply}), 200
     except Exception as e:
-        last_ai_reply = f"Groq Error: {str(e)}"
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "reply": "RoomX encountered an engine error."}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
