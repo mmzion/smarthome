@@ -10,21 +10,21 @@ import io
 
 app = Flask(__name__)
 
-# Groq ক্লায়েন্ট
+# Groq Config
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# গ্লোবাল স্টেট
+# Global States
 audio_buffer = bytearray()
 SILENCE_THRESHOLD = 600  
 SILENCE_DURATION_CHUNKS = 10  
 silent_chunks_count = 0
 has_speech_started = False
 
-# চ্যাট ও কানেকশন ট্র্যাকিং
+# Chat & Connection Tracking
 chat_history = []
 MAX_HISTORY_LENGTH = 5 
-last_esp32_seen = 0  # ESP32 এর শেষ কানেকশনের টাইমস্ট্যাম্প
+last_esp32_seen = 0  
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -61,7 +61,6 @@ DASHBOARD_TEMPLATE = """
         }
         header h1 { margin: 0; font-size: 28px; letter-spacing: 2px; font-weight: 800; color: #fff; }
         
-        /* ESP32 Internet Connection Badge */
         .conn-badge {
             background: rgba(0,0,0,0.4); border: 1px solid #ff2e63; color: #ff2e63;
             padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600;
@@ -75,7 +74,6 @@ DASHBOARD_TEMPLATE = """
 
         .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
 
-        /* Relay Section */
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
         .relay-card { 
             background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; 
@@ -91,7 +89,6 @@ DASHBOARD_TEMPLATE = """
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
 
-        /* Chat Window Section */
         .chat-card {
             background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1);
             display: flex; flex-direction: column; height: 450px; overflow: hidden;
@@ -152,7 +149,6 @@ DASHBOARD_TEMPLATE = """
         let isSending = false;
 
         function updateHub() {
-            // ১. রিলে মেটাত ডাটা লোড
             fetch('{{ fb_url }}')
                 .then(res => res.json())
                 .then(data => {
@@ -175,11 +171,9 @@ DASHBOARD_TEMPLATE = """
                     });
                 });
 
-            // ২. সার্ভার থেকে লাইভ বা ব্যাকগ্রাউন্ড ইভেন্ট (যেমন নতুন ভয়েস কমান্ড আসলে) তুলে আনা
             fetch('/get-latest-events')
                 .then(res => res.json())
                 .then(data => {
-                    // ESP32 ইন্টারনেট কানেকশন চেক
                     const badge = document.getElementById('conn-status');
                     const text = document.getElementById('conn-text');
                     if(data.esp32_online) {
@@ -190,7 +184,6 @@ DASHBOARD_TEMPLATE = """
                         text.innerText = "HomeX Disconnected";
                     }
 
-                    // ব্যাকগ্রাউন্ডে প্রসেস হওয়া ভয়েস মেসেজগুলো চ্যাটে পুশ করা
                     if (data.new_messages && data.new_messages.length > 0) {
                         data.new_messages.forEach(msg => {
                             if(msg.type === 'voice_start') {
@@ -240,9 +233,7 @@ DASHBOARD_TEMPLATE = """
 </html>
 """
 
-# ফ্রন্টএন্ডে রিয়েল-টাইম ভয়েস পুশ করার জন্য অস্থায়ী বাফার
 ui_pending_messages = []
-is_esp32_streaming = False
 
 @app.route('/', methods=['GET'])
 def home():
@@ -250,12 +241,8 @@ def home():
 
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
-    global ui_pending_messages, last_esp32_seen, is_esp32_streaming
-    
-    # শেষ ৫ সেকেন্ডের মধ্যে ESP32 ডেটা পাঠালে তাকে অনলাইন ধরা হবে
+    global ui_pending_messages, last_esp32_seen
     is_online = (time.time() - last_esp32_seen) < 5.0
-    
-    # পেন্ডিং মেসেজগুলো পাঠিয়ে বাফার খালি করা
     messages_to_send = list(ui_pending_messages)
     ui_pending_messages.clear()
     
@@ -266,19 +253,17 @@ def get_latest_events():
 
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
-    global audio_buffer, silent_chunks_count, has_speech_started, last_esp32_seen, ui_pending_messages, is_esp32_streaming
+    global audio_buffer, silent_chunks_count, has_speech_started, last_esp32_seen, ui_pending_messages
     
     data = request.get_json() or {}
     audio_base64 = data.get("audio")
     command_text = data.get("text", "").strip()
     
-    # ১. ব্রাউজার থেকে সরাসরি ম্যানুয়াল চ্যাট টেক্সট কমান্ড
     if command_text and not audio_base64:
         return process_with_groq(command_text, source="manual")
         
-    # ২. ESP32 থেকে আসা লাইভ অডিও স্ট্রিম
     if audio_base64:
-        last_esp32_seen = time.time()  // কানেকশন লাইভ ট্র্যাক হচ্ছে
+        last_esp32_seen = time.time()  # Fix applied here (standard assignment)
         
         chunk_bytes = base64.b64decode(audio_base64)
         audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
@@ -291,13 +276,12 @@ def handle_command():
                 silent_chunks_count = 0
                 if not has_speech_started:
                     has_speech_started = True
-                    ui_pending_messages.append({"type": "voice_start"}) # UI-তে সিগন্যাল পাঠাবে
+                    ui_pending_messages.append({"type": "voice_start"}) 
             else:
                 if has_speech_started:
                     audio_buffer.extend(chunk_bytes)
                     silent_chunks_count += 1
         
-        # কথা বলা শেষ হলে
         if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
             full_audio = bytes(audio_buffer)
             audio_buffer = bytearray()
@@ -380,7 +364,6 @@ def process_with_groq(user_message, source="manual"):
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
         
-        # যদি রিকোয়েস্টটি ESP32 ভয়েস থেকে আসে, তবে UI ব্যাকগ্রাউন্ড বাফারে পুশ করা হবে
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
             
