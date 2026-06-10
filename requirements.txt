@@ -2,3 +2,4 @@ Flask==3.0.3
 google-genai>=2.4.0
 requests==2.31.0
 gunicorn==21.2.0
+numpy>=1.24.0
