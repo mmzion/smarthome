@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import time
 import numpy as np
 from flask import Flask, request, jsonify, render_template_string
 from google import genai
@@ -13,15 +14,15 @@ app = Flask(__name__)
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# সার্ভার মেমরি স্টেট
+# সার্ভার মেমরি স্টেট (গ্লোবাল ভেরিয়েবল)
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 500  
-SILENCE_DURATION_CHUNKS = 15  
+SILENCE_THRESHOLD = 500  # মাইক্রোফোনের নয়েজ লেভেল অনুযায়ী এটি পরিবর্তন করতে পারেন
+SILENCE_DURATION_CHUNKS = 15  # পরপর কতগুলো চঙ্ক নীরব থাকলে ধরে নেওয়া হবে কথা শেষ (প্রায় ১.৫ - ২ সেকেন্ড)
 silent_chunks_count = 0
 has_speech_started = False
 last_received_status = "Waiting for input..."
 
-# ড্যাশবোর্ড UI (HTML/CSS/JS) - চ্যাট অপশন সহ
+# ড্যাশবোর্ড UI (HTML/CSS/JS)
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -41,7 +42,6 @@ DASHBOARD_TEMPLATE = """
         .status-badge { display: inline-block; padding: 5px 10px; border-radius: 5px; font-size: 14px; background: #393e46; color: #eee; }
         .listening { background: #00adb5; color: #fff; animation: pulse 1.5s infinite; }
         
-        /* চ্যাট সেকশনের স্টাইল */
         .chat-input-group { display: flex; gap: 10px; margin-top: 15px; }
         .chat-input { flex: 1; padding: 12px; border-radius: 5px; border: 1px solid #393e46; background: #2a2a2a; color: #fff; font-size: 16px; }
         .chat-input:focus { border-color: #00adb5; outline: none; }
@@ -117,12 +117,10 @@ DASHBOARD_TEMPLATE = """
             
             if (!command) return;
 
-            // বোতাম ও ইনপুট সাময়িকভাবে ডিজেবল করা
             inputField.disabled = true;
             btn.disabled = true;
             btn.innerText = "Sending...";
 
-            // সার্ভারে POST রিকোয়েস্ট পাঠানো
             fetch('/voice-command', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -130,7 +128,6 @@ DASHBOARD_TEMPLATE = """
             })
             .then(response => response.json())
             .then(data => {
-                // ইনপুট ক্লিয়ার ও রিসেট করা
                 inputField.value = '';
                 inputField.disabled = false;
                 btn.disabled = false;
@@ -151,7 +148,7 @@ DASHBOARD_TEMPLATE = """
             }
         }
         
-        setInterval(updateDashboard, 2000); // প্রতি ২ সেকেন্ড পর পর পেজ আপডেট হবে
+        setInterval(updateDashboard, 2000);
         updateDashboard();
     </script>
 </body>
@@ -160,10 +157,12 @@ DASHBOARD_TEMPLATE = """
 
 @app.route('/', methods=['GET'])
 def health_check():
+    """হোম পেজে পুরো সার্ভার ও ডিভাইসের ডিটেইলস প্যানেল দেখাবে (cron-job.org এর 404 ফিক্স)"""
     return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL, last_status=last_received_status), 200
 
 @app.route('/server-stats', methods=['GET'])
 def server_stats():
+    """ফ্রন্টএন্ডের ব্যাকগ্রাউন্ড রিফ্রেসের জন্য মেমরি স্ট্যাটাস এপিআই"""
     global has_speech_started, last_received_status
     return jsonify({"listening": has_speech_started, "last_status": last_received_status})
 
@@ -175,12 +174,12 @@ def handle_command():
     audio_base64 = data.get("audio", None)
     command_text = data.get("text", "")
     
-    # ম্যানুয়াল টেক্সট কমান্ড হ্যান্ডেল করা
+    # ১. ম্যানুয়াল টেক্সট কমান্ড হ্যান্ডেল করা
     if command_text and not audio_base64:
         last_received_status = f"Manual command: '{command_text}'"
         return process_with_gemini(command_text, is_audio=False)
         
-    # ESP32 থেকে আসা অডিও স্ট্রিম হ্যান্ডেল করা
+    # ২. ESP32 থেকে আসা অডিও স্ট্রিম হ্যান্ডেল করা (অনবরত লুপের জন্য)
     if audio_base64:
         chunk_bytes = base64.b64decode(audio_base64)
         audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
@@ -198,8 +197,11 @@ def handle_command():
                     audio_buffer.extend(chunk_bytes)
                     silent_chunks_count += 1
         
+        # কথা শেষ হওয়ার সিদ্ধান্ত সার্ভার নিজে নেবে
         if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
             full_audio = bytes(audio_buffer)
+            
+            # স্টেট রিসেট (পরবর্তী ভয়েস কমান্ডের জন্য)
             audio_buffer = bytearray()
             silent_chunks_count = 0
             has_speech_started = False
@@ -212,6 +214,7 @@ def handle_command():
     return jsonify({"error": "No valid input found"}), 400
 
 def process_with_gemini(contents_data, is_audio=False):
+    """জেমিনি এপিআই কল করার সেন্ট্রাল ফাংশন (Exponential Backoff অটো-রিট্রাই সহ)"""
     global last_received_status
     contents = []
     
@@ -224,21 +227,35 @@ def process_with_gemini(contents_data, is_audio=False):
     Analyze the input and return ONLY a JSON object for relays: 
     {"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}"""
     
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=contents,
-            config=types.GenerateContentConfig(system_instruction=system_instruction, response_mime_type="application/json")
-        )
-        
-        updates = json.loads(response.text)
-        requests.patch(FIREBASE_URL, json=updates)
-        last_received_status = f"Success! Output: {response.text}"
-        return jsonify({"status": "Success", "updates": updates}), 200
+    max_retries = 3      # সর্বোচ্চ ৩ বার চেষ্টা করবে
+    retry_delay = 2      # প্রথমবার বিরতি ২ সেকেন্ড
+    
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.5-flash',
+                contents=contents,
+                config=types.GenerateContentConfig(system_instruction=system_instruction, response_mime_type="application/json")
+            )
             
-    except Exception as e:
-        last_received_status = f"Error: {str(e)}"
-        return jsonify({"error": str(e)}), 500
+            updates = json.loads(response.text)
+            requests.patch(FIREBASE_URL, json=updates)
+            last_received_status = f"Success! Output: {response.text}"
+            return jsonify({"status": "Success", "updates": updates}), 200
+                
+        except Exception as e:
+            # যদি এররটি গুগলের ওভার-ট্রাফিক (503) বা রেট লিমিটের (429) কারণে হয়
+            if "503" in str(e) or "429" in str(e):
+                if attempt < max_retries - 1:
+                    last_received_status = f"Gemini busy (503). Retrying in {retry_delay}s... (Attempt {attempt + 1}/{max_retries})"
+                    print(last_received_status)
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # প্রতিবার ওয়েটিং টাইম দ্বিগুণ হবে (২ সেকেন্ড, ৪ সেকেন্ড...)
+                    continue
+            
+            # ৩ বার ট্রাই করার পরও ফেইল হলে বা অন্য কোনো সাধারণ কোড এরর হলে ফাইনাল এরর দেবে
+            last_received_status = f"Error after {attempt + 1} attempts: {str(e)}"
+            return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
