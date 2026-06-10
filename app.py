@@ -8,18 +8,17 @@ import requests
 
 app = Flask(__name__)
 
-# জেমিনি বাদ দিয়ে এখন Groq ক্লায়েন্ট কনফিগারেশন
-# Render-এর Environment-এ GROQ_API_KEY নামে আপনার কী-টি সেভ করবেন
+# Groq ক্লায়েন্ট কনফিগারেশন
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# গ্লোবাল মেমরি স্টেট (সবচেয়ে হালকা এবং ফাস্ট)
+# গ্লোবাল মেমরি স্টেট
 audio_buffer = bytearray()
 SILENCE_THRESHOLD = 600  
 SILENCE_DURATION_CHUNKS = 10  
 silent_chunks_count = 0
 has_speech_started = False
-last_ai_reply = "Hello Zion! Groq Engine is active. Unlimited mode on."
+last_ai_reply = "Hello Zion! Hardware mapping updated. Ready to control appliances."
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -148,11 +147,9 @@ def handle_command():
     audio_base64 = data.get("audio")
     command_text = data.get("text", "").strip()
     
-    # চ্যাট ইনপুট হ্যান্ডেল করা
     if command_text and not audio_base64:
         return process_with_groq(command_text)
         
-    # ESP32 থেকে আসা অডিও ইনপুট প্রসেস করা
     if audio_base64:
         chunk_bytes = base64.b64decode(audio_base64)
         audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
@@ -168,9 +165,6 @@ def handle_command():
                     silent_chunks_count += 1
         
         if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
-            # দ্রষ্টব্য: Groq সরাসরি অডিও ফাইল ইনপুট নেয় না টেক্সট জেনারেশন মডেলে।
-            # তাই ভয়েস টু টেক্সট (Whisper) অথবা অডিওর জন্য আমরা পরবর্তীতে আরেকটি এপিআই রুট করব।
-            # আপাতত টেক্সট চ্যাট ইন্টারফেস সুপার-ফাস্ট মোডে রান করার জন্য সেট করা হলো।
             audio_buffer = bytearray()
             silent_chunks_count = 0
             has_speech_started = False
@@ -183,20 +177,32 @@ def handle_command():
 def process_with_groq(user_message):
     global last_ai_reply
     
+    # প্রম্পট ইঞ্জিনিয়ারিং এর মাধ্যমে হার্ডওয়্যার ম্যাপিং নিখুঁত করা হয়েছে
     system_instruction = """You are a super fast AI Smart Home Assistant. Reply to user queries warmly.
+    
+    Here is the exact hardware mapping of Zion's house:
+    - relay_1: Main Light
+    - relay_2: Dim Light
+    - relay_3: Fan
+    - relay_4: Socket
+
+    When the user asks to control an appliance, you must update the correct relay based on the mapping above.
+    For example, if the user says "turn on socket", set relay_4 to "ON".
+    If the user clarifies mapping like "socket is in the relay 4", acknowledge it nicely and make sure relay_4 matches the user's intent.
+    
     You must output valid JSON data ONLY. Use this strict scheme:
     {"reply": "your textual conversation here", "relays": {"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}
-    Do not change relay states unless specifically commanded by the user."""
+    
+    Do not change relay states unless specifically commanded by the user. Maintain the current states if they are not explicitly mentioned in the turn ON/OFF command."""
 
     try:
-        # Groq-এর সবচেয়ে শক্তিশালী Llama 3.3 মডেল ব্যবহার করা হয়েছে
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": user_message}
             ],
-            response_format={"type": "json_object"} # এটি কোডকে ফাস্ট এবং অবজেক্ট রিটার্ন নিশ্চিত করে
+            response_format={"type": "json_object"}
         )
         
         response_text = completion.choices[0].message.content
