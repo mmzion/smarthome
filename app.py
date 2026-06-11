@@ -5,7 +5,8 @@ from flask import Flask, request, jsonify, render_template_string, send_file, ma
 from groq import Groq
 import requests
 import io
-from gtts import gTTS  # Google Text-to-Speech লাইব্রেরি
+from gtts import gTTS
+from pydub import AudioSegment  # অডিও ফরম্যাট কনভার্ট করার নতুন লাইব্রেরি
 
 app = Flask(__name__)
 
@@ -289,7 +290,6 @@ def handle_command():
             esp32_current_state = "Online"
             return jsonify({"error": "Audio track too short"}), 400
             
-        # ESP32 থেকে রিকোয়েস্ট আসলে এটি সরাসরি Google TTS জেনারেট করে MP3 বাইনারি পাঠাবে
         return transcribe_and_process(audio_bytes, output_audio=True)
     else:
         data = request.get_json() or {}
@@ -378,19 +378,28 @@ def process_with_groq(user_message, source="manual", output_audio=False):
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
             
-        # Google Text-to-Speech ইন্টিগ্রেশন: টেক্সট রেসপন্সটিকে লাইভ অডিওতে কনভার্ট করা হচ্ছে
+        # ফিক্সড লজিক: MP3 ফাইলটিকে লাইভ ডিকোড করে র পিসিএম (Raw PCM) ডাটা জেনারেট করা হচ্ছে
         if output_audio:
+            # ১. প্রথমে গুগল টিটিএস দিয়ে এমপি৩ জেনারেট করা হলো মেমরিতে
             tts = gTTS(text=ai_reply, lang='en', slow=False)
-            audio_fp = io.BytesIO()
-            tts.write_to_fp(audio_fp)
-            audio_fp.seek(0)
+            mp3_fp = io.BytesIO()
+            tts.write_to_fp(mp3_fp)
+            mp3_fp.seek(0)
             
-            # সরাসরি র স্পিকার ফ্রেন্ডলি অডিও বাইনারি পাঠানো হচ্ছে
-            return send_file(audio_fp, mimetype="audio/mpeg")
+            # ২. pydub ব্যবহার করে MP3 ডাটাকে সরাসরি পিওর PCM এ রূপান্তর (24kHz, 16-bit, Mono)
+            sound = AudioSegment.from_file(mp3_fp, format="mp3")
+            sound = sound.set_frame_rate(24000).set_channels(1).set_sample_width(2)
+            
+            # ৩. শুধুমাত্র পিওর অডিওর র বাইনারি ডাটা (WAV হেডার বা কম্প্রেশন ছাড়া) এক্সট্র্যাক্ট করা হলো
+            raw_pcm_bytes = sound.raw_data
+            
+            # ৪. র পিসিএম বাইনারি স্ট্রিম রেসপন্স হিসেবে সরাসরি ESP32 স্পিকারে রিটার্ন
+            return send_file(io.BytesIO(raw_pcm_bytes), mimetype="application/octet-stream")
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
-    except:
-        return jsonify({"status": "JSON Parse Error"}), 500
+    except Exception as e:
+        print(f"Error in processing: {str(e)}")
+        return jsonify({"status": "Processing Error"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
