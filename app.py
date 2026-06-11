@@ -1,10 +1,10 @@
 import os
 import json
 import time
+import io
+import requests
 from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
-import requests
-import io
 from gtts import gTTS
 
 app = Flask(__name__)
@@ -16,13 +16,31 @@ FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 # Global System States
 last_recorded_wav = None
 chat_history = []
-MAX_HISTORY_LENGTH = 5 
+MAX_HISTORY_LENGTH = 7 # অ্যাসিস্ট্যান্টের মেমোরি কনটেক্সট বাড়ানোর জন্য হিস্ট্রি লেন্থ বাড়ানো হলো
 last_esp32_seen = 0  
 esp32_current_state = "Disconnected" 
 ui_pending_messages = []
 current_tts_audio = None
 
-# (ড্যাশবোর্ড টেমপ্লেট আগের মতোই হুবহু অপরিবর্তিত থাকবে)
+# --- ইন্টারনেট সার্চ ইঞ্জিন (ফ্রি ও রিয়েল-টাইম) ---
+def internet_search(query):
+    try:
+        # DDG API ব্যবহার করে যেকোনো লাইভ ইনফরমেশন স্ক্র্যাপ করার অত্যন্ত ফাস্ট মেকানিজম
+        url = f"https://api.duckduckgo.com/?q={query}&format=json&no_html=1&skip_disambig=1"
+        res = requests.get(url, timeout=2.5)
+        if res.status_code == 200:
+            data = res.json()
+            # যদি সরাসরি ডিরেক্ট টেক্সট আনসার পাওয়া যায়
+            if data.get("AbstractText"):
+                return data["AbstractText"]
+            # বিকল্প ব্যাকআপ সোর্স (রিলিজড টপিকস)
+            elif data.get("RelatedTopics") and len(data["RelatedTopics"]) > 0:
+                return data["RelatedTopics"][0].get("Text", "No deep info found.")
+        return "I search the web but couldn't get definitive real-time facts."
+    except Exception as e:
+        return f"Internet search temporarily unavailable: {str(e)}"
+
+# --- (ড্যাশবোর্ড টেমপ্লেট আগের মতোই হুবহু অপরিবর্তিত থাকবে) ---
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -127,8 +145,6 @@ def get_tts_audio():
     global current_tts_audio
     if current_tts_audio is None:
         return jsonify({"error": "No voice yet"}), 404
-    
-    # নোটিশ: ESP32 এর নতুন অডিও ড্রাইভার সরাসরি HTTP এমপি৩ স্ট্রিম রিড করতে পারে
     return send_file(io.BytesIO(current_tts_audio), mimetype="audio/mpeg")
 
 @app.route('/get-voice-track', methods=['GET'])
@@ -216,19 +232,50 @@ def transcribe_and_process(audio_bytes):
 
 def process_with_groq(user_message, source="manual"):
     global chat_history, ui_pending_messages, current_tts_audio
+    
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
         res = requests.get(FIREBASE_URL, timeout=1.5)
         if res.status_code == 200 and res.json(): current_relays = res.json()
     except: pass
 
-    system_instruction = f"""You are RoomX AI, an elite smart home operating system. 
-    Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
-    Current States: {json.dumps(current_relays)}
-    Rules: 
-    1. Extract target device and state command.
-    2. Maintain all other relay assignments exactly as they are in the CURRENT RELAY STATES.
-    3. Output JSON ONLY. Scheme: {{"reply": "text", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
+    # ১. প্রথম ধাপে রাউটার প্রম্পট: এআই বুঝবে সাধারণ প্রশ্ন নাকি রিলে কন্ট্রোল কমান্ড
+    router_instruction = """You are an advanced Smart Home Assistant routing engine.
+    Analyze the user message. Is it asking for general world knowledge, calculations, live status, or internet search?
+    If YES, response exactly with: {"need_search": "the specific short search term"}
+    If NO (it's just a regular home automation control command like 'turn on fan'), response exactly with: {"need_search": "NO"}"""
+    
+    search_query = "NO"
+    try:
+        route_check = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": router_instruction}, {"role": "user", "content": user_message}],
+            response_format={"type": "json_object"}
+        )
+        route_res = json.loads(route_check.choices[0].message.content)
+        search_query = route_res.get("need_search", "NO")
+    except: pass
+
+    # ২. যদি লাইভ ইনফরমেশন লাগে, তবে ব্যাকগ্রাউন্ডে ইন্টারনেট স্ক্র্যাপ হবে
+    internet_context = ""
+    if search_query != "NO":
+        print(f"🌐 Fetching live data from internet for: {search_query}")
+        internet_context = internet_search(search_query)
+
+    # ৩. ফাইনাল প্রম্পট জেনারেশন (হোম অটোমেশন কন্ট্রোল + লাইভ ইন্টারনেট কনটেক্সট কম্বিনেশন)
+    system_instruction = f"""You are RoomX Advanced Intelligence Hub, fully integrated with smart home controls and world knowledge.
+    Smart Home Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
+    Current Home Relay States: {json.dumps(current_relays)}
+    
+    LIVE INTERNET SEARCH CONTEXT (Use this if user asks for factual info/updates/news):
+    ---
+    {internet_context}
+    ---
+    
+    Rules:
+    1. If user asks general questions or live data, formulate a helpful, concise answer based on the search context or your training data.
+    2. If user requests to toggle relays, update the states accordingly while preserving all other untouched states.
+    3. Output JSON ONLY. Scheme: {{"reply": "your crisp vocal answer here", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
 
     messages = [{"role": "system", "content": system_instruction}]
     for h in chat_history:
@@ -243,14 +290,16 @@ def process_with_groq(user_message, source="manual"):
             response_format={"type": "json_object"}
         )
         result = json.loads(completion.choices[0].message.content)
-        ai_reply = result.get("reply", "Executed.")
+        ai_reply = result.get("reply", "Command executed successfully.")
         updates = result.get("relays", current_relays)
         
+        # ফায়ারবেস রিলে স্ট্যাটাস সিঙ্ক
         requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
+        
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
         
-        # গুগল টিটিএস এর অরিজিনাল এমপি৩ বাইটস মেমরিতে রাইট করা হচ্ছে
+        # গুগল টিটিএস এর অডিও জেনারেশন
         tts = gTTS(text=ai_reply, lang='en', slow=False)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
@@ -261,7 +310,7 @@ def process_with_groq(user_message, source="manual"):
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
     except Exception as e:
-        return jsonify({"status": "JSON Parse Error", "error": str(e)}), 500
+        return jsonify({"status": "Hub Error", "error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
