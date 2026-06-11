@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
 import io
-from gtts import gTTS  # গুগল টিটিএস আবার নিয়ে আসা হলো
+from gtts import gTTS
 
 app = Flask(__name__)
 
@@ -20,247 +20,99 @@ MAX_HISTORY_LENGTH = 5
 last_esp32_seen = 0  
 esp32_current_state = "Disconnected" 
 ui_pending_messages = []
-
-# সর্বশেষ জেনারেট হওয়া অডিও বাইটস মেমরিতে রাখার গ্লোবাল ভেরিয়েবল
 current_tts_audio = None
 
+# (ড্যাশবোর্ড টেমপ্লেট আগের মতোই হুবহু অপরিবর্তিত থাকবে)
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RoomX | Unified Intelligence Hub</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        :root {
-            --bg: #0f0c29;
-            --purple-main: #9d50bb;
-            --card-bg: rgba(255, 255, 255, 0.05);
-            --text: #f5f5f5;
-            --green-glow: #00ff87;
-            --amber-glow: #ff9f43;
-            --red-glow: #ff2e63;
-        }
+        :root { --bg: #0f0c29; --purple-main: #9d50bb; --card-bg: rgba(255, 255, 255, 0.05); --text: #f5f5f5; --green-glow: #00ff87; --amber-glow: #ff9f43; --red-glow: #ff2e63; }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { 
-            font-family: 'Segoe UI', sans-serif; 
-            background: var(--bg); 
-            background-image: radial-gradient(circle at 50% 50%, #1a1a3a 0%, #0f0c29 100%);
-            color: var(--text); margin: 0; padding: 0;
-            display: flex; flex-direction: column; align-items: center; min-height: 100vh;
-        }
-        header {
-            width: 100%; padding: 20px; text-align: center;
-            background: rgba(0,0,0,0.3); backdrop-filter: blur(10px);
-            border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px;
-            display: flex; justify-content: center; align-items: center; gap: 15px;
-        }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); background-image: radial-gradient(circle at 50% 50%, #1a1a3a 0%, #0f0c29 100%); color: var(--text); margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        header { width: 100%; padding: 20px; text-align: center; background: rgba(0,0,0,0.3); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; display: flex; justify-content: center; align-items: center; gap: 15px; }
         header h1 { margin: 0; font-size: 28px; letter-spacing: 2px; font-weight: 800; color: #fff; }
-        .conn-badge {
-            background: rgba(0,0,0,0.4); border: 1px solid var(--red-glow); color: var(--red-glow);
-            padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600;
-            display: flex; align-items: center; gap: 8px; transition: 0.3s;
-        }
-        .conn-badge.online {
-            border-color: var(--green-glow); color: var(--green-glow);
-            box-shadow: 0 0 10px rgba(0, 255, 135, 0.2);
-        }
-        .conn-badge.streaming {
-            border-color: var(--amber-glow); color: var(--amber-glow);
-            box-shadow: 0 0 10px rgba(255, 159, 67, 0.3);
-        }
+        .conn-badge { background: rgba(0,0,0,0.4); border: 1px solid var(--red-glow); color: var(--red-glow); padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; transition: 0.3s; }
+        .conn-badge.online { border-color: var(--green-glow); color: var(--green-glow); box-shadow: 0 0 10px rgba(0, 255, 135, 0.2); }
+        .conn-badge.streaming { border-color: var(--amber-glow); color: var(--amber-glow); box-shadow: 0 0 10px rgba(255, 159, 67, 0.3); }
         .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
-        .relay-card { 
-            background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; 
-            padding: 20px; text-align: center; transition: all 0.3s ease;
-        }
+        .relay-card { background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 20px; text-align: center; transition: all 0.3s ease; }
         .relay-card i { font-size: 30px; margin-bottom: 10px; display: block; }
         .relay-card span { font-size: 14px; font-weight: 600; opacity: 0.8; }
         .relay-card .status { font-size: 11px; margin-top: 5px; display: block; letter-spacing: 1px; }
-        .relay-card.ON { 
-            background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main);
-            box-shadow: 0 0 15px rgba(157, 80, 187, 0.3);
-        }
+        .relay-card.ON { background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main); box-shadow: 0 0 15px rgba(157, 80, 187, 0.3); }
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
-        
-        .audio-monitor-card {
-            background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main);
-            border-radius: 15px; padding: 12px 20px; display: flex; align-items: center;
-            justify-content: space-between; gap: 15px; margin-bottom: -5px;
-        }
+        .audio-monitor-card { background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main); border-radius: 15px; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: -5px; }
         .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
         .voice-settings { display: flex; align-items: center; gap: 10px; }
         .btn-voice { background: #00ff87; color: #000; border: none; padding: 6px 14px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 12px; }
-        .btn-voice.off { background: rgba(255,255,255,0.2); color: #fff; }
-
-        .chat-card {
-            background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1);
-            display: flex; flex-direction: column; height: 430px; overflow: hidden;
-        }
+        .chat-card { background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; height: 430px; overflow: hidden; }
         .chat-window { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
         .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
         .user-msg { align-self: flex-end; background: var(--purple-main); color: white; border-bottom-right-radius: 4px; }
         .ai-msg { align-self: flex-start; background: rgba(255,255,255,0.1); color: #eee; border-bottom-left-radius: 4px; }
         .system-msg { align-self: center; background: rgba(255, 159, 67, 0.1); color: #ff9f43; border: 1px dashed #ff9f43; font-size: 12px; border-radius: 10px; }
         .input-area { padding: 15px; background: rgba(0,0,0,0.2); display: flex; gap: 10px; }
-        .input-area input {
-            flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 50px; padding: 12px 20px; color: white; outline: none; font-size: 15px;
-        }
+        .input-area input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 50px; padding: 12px 20px; color: white; outline: none; font-size: 15px; }
         .input-area input:focus { border-color: var(--purple-main); }
-        .input-area button {
-            background: var(--purple-main); color: white; border: none;
-            width: 45px; height: 45px; border-radius: 50%; cursor: pointer;
-            display: flex; align-items: center; justify-content: center; transition: 0.3s;
-        }
-        .input-area button:hover { transform: scale(1.1); }
+        .input-area button { background: var(--purple-main); color: white; border: none; width: 45px; height: 45px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.3s; }
     </style>
 </head>
 <body>
-    <header>
-        <h1>RoomX</h1>
-        <div id="conn-status" class="conn-badge">
-            <i class="fas fa-circle"></i> <span id="conn-text">HomeX Disconnected</span>
-        </div>
-    </header>
+    <header><h1>RoomX</h1><div id="conn-status" class="conn-badge"><i class="fas fa-circle"></i> <span id="conn-text">HomeX Disconnected</span></div></header>
     <div class="container">
-        <div id="device-grid" class="grid">
-            <div class="relay-card OFF"><span>Loading Sync...</span></div>
-        </div>
-        
-        <div class="audio-monitor-card">
-            <span><i class="fas fa-volume-high"></i> Dashboard Agent Real Audio Player:</span>
-            <div class="voice-settings">
-                <button id="play-btn" class="btn-voice" onclick="playLiveAudio()">▶ Play Voice Response</button>
-            </div>
-        </div>
-
+        <div id="device-grid" class="grid"><div class="relay-card OFF"><span>Loading Sync...</span></div></div>
+        <div class="audio-monitor-card"><span><i class="fas fa-volume-high"></i> Dashboard Agent Real Audio Player:</span><div class="voice-settings"><button id="play-btn" class="btn-voice" onclick="playLiveAudio()">▶ Play Voice Response</button></div></div>
         <audio id="dashboard-speaker" style="display:none;"></audio>
-
         <div class="chat-card">
-            <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! Unified Hub Status System is fully sync'd.</div>
-            </div>
-            <div class="input-area">
-                <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
-                <button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button>
-            </div>
+            <div class="chat-window" id="chat-window"><div class="msg ai-msg">Welcome back Zion! Unified Hub Status System is fully sync'd.</div></div>
+            <div class="input-area"><input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)"><button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button></div>
         </div>
     </div>
     <script>
-        const chatWindow = document.getElementById('chat-window');
-        const dSpk = document.getElementById('dashboard-speaker');
-        let isSending = false;
-
-        // সার্ভার থেকে লাইভ জেনারেট হওয়া অডিও ডিরেক্ট প্লে করার ফাংশন
-        function playLiveAudio() {
-            // ক্যাশ সমস্যা এড়াতে টাইমস্ট্যাম্প যোগ করে অডিও সোর্স লোড করা হচ্ছে
-            dSpk.src = "/get-tts-audio?t=" + new Date().getTime();
-            dSpk.load();
-            dSpk.play().catch(function(err) {
-                console.log("Autoplay blocked. Click the button manually to listen.");
-            });
-        }
-
+        const chatWindow = document.getElementById('chat-window'); const dSpk = document.getElementById('dashboard-speaker'); let isSending = false;
+        function playLiveAudio() { dSpk.src = "/get-tts-audio?t=" + new Date().getTime(); dSpk.load(); dSpk.play().catch(function(err){}); }
         function updateHub() {
-            fetch('{{ fb_url }}')
-                .then(res => res.json())
-                .then(data => {
-                    const grid = document.getElementById('device-grid');
-                    grid.innerHTML = '';
-                    const devices = [
-                        { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
-                        { id: "relay_2", name: "Dim Light", icon: "fa-moon" },
-                        { id: "relay_3", name: "Fan", icon: "fa-fan" },
-                        { id: "relay_4", name: "Socket", icon: "fa-plug" }
-                    ];
-                    
-                    devices.forEach(function(dev) {
-                        const state = data[dev.id] || "OFF";
-                        let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
-                        grid.innerHTML += '<div class="relay-card ' + state + '">' +
-                            '<i class="fas ' + dev.icon + ' ' + spinClass + '"></i>' +
-                            '<span>' + dev.name + '</span>' +
-                            '<span class="status">' + state + '</span>' +
-                            '</div>';
+            fetch('{{ fb_url }}').then(res => res.json()).then(data => {
+                const grid = document.getElementById('device-grid'); grid.innerHTML = '';
+                const devices = [{ id: "relay_1", name: "Main Light", icon: "fa-lightbulb" }, { id: "relay_2", name: "Dim Light", icon: "fa-moon" }, { id: "relay_3", name: "Fan", icon: "fa-fan" }, { id: "relay_4", name: "Socket", icon: "fa-plug" }];
+                devices.forEach(function(dev) {
+                    const state = data[dev.id] || "OFF"; let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
+                    grid.innerHTML += '<div class="relay-card ' + state + '"><i class="fas ' + dev.icon + ' ' + spinClass + '"></i><span>' + dev.name + '</span><span class="status">' + state + '</span></div>';
+                });
+            });
+            fetch('/get-latest-events').then(res => res.json()).then(data => {
+                const badge = document.getElementById('conn-status'); const text = document.getElementById('conn-text');
+                badge.classList.remove('online', 'streaming');
+                if(data.state === "Streaming") { badge.classList.add('streaming'); text.innerText = "Voice Transmit Active..."; }
+                else if(data.state === "Online") { badge.classList.add('online'); text.innerText = "HomeX Connected to Internet"; }
+                else { text.innerText = "HomeX Disconnected"; }
+                if (data.new_messages && data.new_messages.length > 0) {
+                    data.new_messages.forEach(function(msg) {
+                        if(msg.type === 'voice_start') { chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>'; }
+                        else { chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div><div class="msg ai-msg">' + msg.ai + '</div>'; setTimeout(playLiveAudio, 600); }
                     });
-                });
-
-            fetch('/get-latest-events')
-                .then(res => res.json())
-                .then(data => {
-                    const badge = document.getElementById('conn-status');
-                    const text = document.getElementById('conn-text');
-                    
-                    badge.classList.remove('online', 'streaming');
-                    if(data.state === "Streaming") {
-                        badge.classList.add('streaming');
-                        text.innerText = "Voice Transmit Active...";
-                    } else if(data.state === "Online") {
-                        badge.classList.add('online');
-                        text.innerText = "HomeX Connected to Internet";
-                    } else {
-                        text.innerText = "HomeX Disconnected";
-                    }
-
-                    if (data.new_messages && data.new_messages.length > 0) {
-                        data.new_messages.forEach(function(msg) {
-                            if(msg.type === 'voice_start') {
-                                chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
-                            } else {
-                                chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
-                                chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
-                                
-                                // ফিক্সড ট্রিক: নতুন মেসেজ আসলেই ব্রাউজারকে অডিও সোর্স সিঙ্ক করিয়ে প্লে করানো হবে
-                                setTimeout(playLiveAudio, 600);
-                            }
-                        });
-                        chatWindow.scrollTop = chatWindow.scrollHeight;
-                    }
-                });
-        }
-
-        function sendManualCommand() {
-            const input = document.getElementById('chat-msg');
-            const btn = document.getElementById('send-btn');
-            const cmd = input.value.trim();
-            if(!cmd || isSending) return;
-
-            isSending = true; input.disabled = true; btn.disabled = true;
-            chatWindow.innerHTML += '<div class="msg user-msg">' + cmd + '</div>';
-            chatWindow.scrollTop = chatWindow.scrollHeight;
-
-            fetch('/voice-command', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ text: cmd })
-            })
-            .then(res => res.json())
-            .then(data => {
-                chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>';
-                chatWindow.scrollTop = chatWindow.scrollHeight;
-                
-                // ম্যানুয়াল কম্যান্ড হ্যান্ডল করার পর একটু টাইমিং নিয়ে অডিও ফায়ার হবে
-                setTimeout(playLiveAudio, 400);
-                
-                input.value = ''; input.disabled = false; btn.disabled = false; isSending = false;
-                input.focus(); 
-                updateHub();
-            })
-            .catch(() => {
-                input.disabled = false; btn.disabled = false; isSending = false; input.focus();
+                    chatWindow.scrollTop = chatWindow.scrollHeight;
+                }
             });
         }
-        
+        function sendManualCommand() {
+            const input = document.getElementById('chat-msg'); const btn = document.getElementById('send-btn'); const cmd = input.value.trim(); if(!cmd || isSending) return;
+            isSending = true; input.disabled = true; btn.disabled = true; chatWindow.innerHTML += '<div class="msg user-msg">' + cmd + '</div>'; chatWindow.scrollTop = chatWindow.scrollHeight;
+            fetch('/voice-command', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ text: cmd }) })
+            .then(res => res.json()).then(data => {
+                chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>'; chatWindow.scrollTop = chatWindow.scrollHeight;
+                setTimeout(playLiveAudio, 400); input.value = ''; input.disabled = false; btn.disabled = false; isSending = false; input.focus(); updateHub();
+            }).catch(() => { input.disabled = false; btn.disabled = false; isSending = false; input.focus(); });
+        }
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateHub, 1000); 
-        updateHub();
-        
-        // প্রথমবার ইউজার ইন্টারেকশন নেওয়ার জন্য ইনপুট ফোকাস
-        document.getElementById('chat-msg').focus();
+        setInterval(updateHub, 1000); updateHub(); document.getElementById('chat-msg').focus();
     </script>
 </body>
 </html>
@@ -270,12 +122,13 @@ DASHBOARD_TEMPLATE = """
 def home():
     return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL), 200
 
-# ড্যাশবোর্ডের জন্য লাইভ জেনারেট হওয়া অডিও ট্র্যাকিং রাউট
 @app.route('/get-tts-audio', methods=['GET'])
 def get_tts_audio():
     global current_tts_audio
     if current_tts_audio is None:
         return jsonify({"error": "No voice yet"}), 404
+    
+    # নোটিশ: ESP32 এর নতুন অডিও ড্রাইভার সরাসরি HTTP এমপি৩ স্ট্রিম রিড করতে পারে
     return send_file(io.BytesIO(current_tts_audio), mimetype="audio/mpeg")
 
 @app.route('/get-voice-track', methods=['GET'])
@@ -397,11 +250,11 @@ def process_with_groq(user_message, source="manual"):
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
         
-        # সার্ভার এন্ডে পিওর গুগল টিটিএস অডিও ফাইল জেনারেট করে মেমরিতে সেভ করা হচ্ছে
+        # গুগল টিটিএস এর অরিজিনাল এমপি৩ বাইটস মেমরিতে রাইট করা হচ্ছে
         tts = gTTS(text=ai_reply, lang='en', slow=False)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
-        current_tts_audio = fp.getvalue()  # গ্লোবাল ভেরিয়েবলে র এমপি৩ ডাটা রাইট হলো
+        current_tts_audio = fp.getvalue() 
         
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
