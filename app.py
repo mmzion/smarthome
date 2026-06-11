@@ -10,9 +10,11 @@ import io
 
 app = Flask(__name__)
 
+# Groq Configuration
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
+# Global Hardware & Stream States
 audio_buffer = bytearray()
 SILENCE_THRESHOLD = 700  
 SILENCE_DURATION_CHUNKS = 12  
@@ -20,6 +22,7 @@ silent_chunks_count = 0
 has_speech_started = False
 last_recorded_wav = None
 
+# Chat History & Connection Tracking
 chat_history = []
 MAX_HISTORY_LENGTH = 5 
 last_esp32_seen = 0  
@@ -157,14 +160,17 @@ DASHBOARD_TEMPLATE = """
                         { id: "relay_3", name: "Fan", icon: "fa-fan" },
                         { id: "relay_4", name: "Socket", icon: "fa-plug" }
                     ];
-                    devices.forEach(dev => {
+                    
+                    // ফিক্সড: জিংজা কনফ্লিক্ট এড়াতে পিওর স্ট্রিং কনক্যাটিনেশন মেথড
+                    devices.forEach(function(dev) {
                         const state = data[dev.id] || "OFF";
-                        grid.innerHTML += `
-                            <div class="relay-card \${state}">
-                                <i class="fas \${dev.icon} \${state === 'ON' && dev.id === 'relay_3' ? 'fa-spin' : ''}"></i>
-                                <span>\${dev.name}</span>
-                                <span class="status">\${state}</span>
-                            </div>`;
+                        let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
+                        
+                        grid.innerHTML += '<div class="relay-card ' + state + '">' +
+                            '<i class="fas ' + dev.icon + ' ' + spinClass + '"></i>' +
+                            '<span>' + dev.name + '</span>' +
+                            '<span class="status">' + state + '</span>' +
+                            '</div>';
                     });
                 });
 
@@ -182,12 +188,12 @@ DASHBOARD_TEMPLATE = """
                     }
 
                     if (data.new_messages && data.new_messages.length > 0) {
-                        data.new_messages.forEach(msg => {
+                        data.new_messages.forEach(function(msg) {
                             if(msg.type === 'voice_start') {
-                                chatWindow.innerHTML += `<div class="msg system-msg"><i class="fas fa-microphone"></i> ESP32 Audio Streaming...</div>`;
+                                chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> ESP32 Audio Streaming...</div>';
                             } else {
-                                chatWindow.innerHTML += `<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>\${msg.user}</div>`;
-                                chatWindow.innerHTML += `<div class="msg ai-msg">\${msg.ai}</div>`;
+                                chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
+                                chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
                                 audioPlayer.load();
                             }
                         });
@@ -203,7 +209,7 @@ DASHBOARD_TEMPLATE = """
             if(!cmd || isSending) return;
 
             isSending = true; input.disabled = true; btn.disabled = true;
-            chatWindow.innerHTML += `<div class="msg user-msg">\${cmd}</div>`;
+            chatWindow.innerHTML += '<div class="msg user-msg">' + cmd + '</div>';
             chatWindow.scrollTop = chatWindow.scrollHeight;
 
             fetch('/voice-command', {
@@ -213,7 +219,7 @@ DASHBOARD_TEMPLATE = """
             })
             .then(res => res.json())
             .then(data => {
-                chatWindow.innerHTML += `<div class="msg ai-msg">\${data.reply}</div>`;
+                chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>';
                 chatWindow.scrollTop = chatWindow.scrollHeight;
                 input.value = ''; input.disabled = false; btn.disabled = false; isSending = false;
                 input.focus(); 
@@ -223,6 +229,7 @@ DASHBOARD_TEMPLATE = """
                 input.disabled = false; btn.disabled = false; isSending = false; input.focus();
             });
         }
+        
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
         setInterval(updateHub, 1500);
         updateHub();
@@ -255,7 +262,6 @@ def get_latest_events():
 def handle_command():
     global last_esp32_seen, ui_pending_messages
     
-    # ইনকামিং ডাটা ট্র্যাকিং সেফগার্ড (400 এরর হ্যান্ডলিং)
     raw_data = request.get_data()
     if not raw_data:
         return jsonify({"error": "Empty body"}), 400
@@ -272,7 +278,7 @@ def handle_command():
         return process_with_groq(command_text, source="manual")
         
     if audio_base64:
-        last_esp32_seen = time.time()  # সাকসেসফুল রিকোয়েস্ট আসামাত্রই স্ট্যাটাস অনলাইন হবে
+        last_esp32_seen = time.time()  
         try:
             audio_bytes = base64.b64decode(audio_base64)
             if len(audio_bytes) >= 10000:
@@ -282,6 +288,8 @@ def handle_command():
             return jsonify({"error": "Invalid base64 encoding"}), 400
             
     return jsonify({"status": "Success", "esp32_online": True}), 200
+
+void_bytes_history = bytearray()
 
 def transcribe_and_process(audio_bytes):
     global last_recorded_wav
