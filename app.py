@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
 import io
+from gtts import gTTS  # গুগল টিটিএস আবার নিয়ে আসা হলো
 
 app = Flask(__name__)
 
@@ -19,6 +20,9 @@ MAX_HISTORY_LENGTH = 5
 last_esp32_seen = 0  
 esp32_current_state = "Disconnected" 
 ui_pending_messages = []
+
+# সর্বশেষ জেনারেট হওয়া অডিও বাইটস মেমরিতে রাখার গ্লোবাল ভেরিয়েবল
+current_tts_audio = None
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -82,7 +86,6 @@ DASHBOARD_TEMPLATE = """
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
         
-        /* নতুন ভয়েস অপশন প্যানেল স্টাইল */
         .audio-monitor-card {
             background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main);
             border-radius: 15px; padding: 12px 20px; display: flex; align-items: center;
@@ -90,7 +93,7 @@ DASHBOARD_TEMPLATE = """
         }
         .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
         .voice-settings { display: flex; align-items: center; gap: 10px; }
-        .btn-voice { background: #ff9f43; color: #000; border: none; padding: 5px 12px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; }
+        .btn-voice { background: #00ff87; color: #000; border: none; padding: 6px 14px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 12px; }
         .btn-voice.off { background: rgba(255,255,255,0.2); color: #fff; }
 
         .chat-card {
@@ -129,11 +132,13 @@ DASHBOARD_TEMPLATE = """
         </div>
         
         <div class="audio-monitor-card">
-            <span><i class="fas fa-volume-high"></i> Dashboard AI Voice Agent Speaker:</span>
+            <span><i class="fas fa-volume-high"></i> Dashboard Agent Real Audio Player:</span>
             <div class="voice-settings">
-                <button id="voice-toggle" class="btn-voice" onclick="toggleVoice()">🔊 Voice Output: ON</button>
+                <button id="play-btn" class="btn-voice" onclick="playLiveAudio()">▶ Play Voice Response</button>
             </div>
         </div>
+
+        <audio id="dashboard-speaker" style="display:none;"></audio>
 
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
@@ -147,29 +152,17 @@ DASHBOARD_TEMPLATE = """
     </div>
     <script>
         const chatWindow = document.getElementById('chat-window');
+        const dSpk = document.getElementById('dashboard-speaker');
         let isSending = false;
-        let voiceOutputEnabled = true; // ভয়েস আউটপুট ডিফল্ট অন থাকবে
 
-        function toggleVoice() {
-            const btn = document.getElementById('voice-toggle');
-            voiceOutputEnabled = !voiceOutputEnabled;
-            if(voiceOutputEnabled) {
-                btn.innerText = "🔊 Voice Output: ON";
-                btn.classList.remove('off');
-            } else {
-                btn.innerText = "🔇 Voice Output: OFF";
-                btn.classList.add('off');
-            }
-        }
-
-        // ব্রাউজার স্পিকার দিয়ে কথা বলানোর মূল লজিক (TTS)
-        void function speakText(text) {
-            if (!voiceOutputEnabled) return;
-            window.speechSynthesis.cancel(); // আগের কোনো কথা মাঝপথে থাকলে তা কেটে নতুনটা শুরু করবে
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = 'en-US';
-            utterance.rate = 1.0; 
-            window.speechSynthesis.speak(utterance);
+        // সার্ভার থেকে লাইভ জেনারেট হওয়া অডিও ডিরেক্ট প্লে করার ফাংশন
+        function playLiveAudio() {
+            // ক্যাশ সমস্যা এড়াতে টাইমস্ট্যাম্প যোগ করে অডিও সোর্স লোড করা হচ্ছে
+            dSpk.src = "/get-tts-audio?t=" + new Date().getTime();
+            dSpk.load();
+            dSpk.play().catch(function(err) {
+                console.log("Autoplay blocked. Click the button manually to listen.");
+            });
         }
 
         function updateHub() {
@@ -221,8 +214,8 @@ DASHBOARD_TEMPLATE = """
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
                                 
-                                // ফিক্সড: টাইপড বা ভয়েস যেকোনো কম্যান্ডেরই এআই রেসপন্সটি লাইভ ড্যাশবোর্ড স্পীকারে বাজবে!
-                                speakText(msg.ai);
+                                // ফিক্সড ট্রিক: নতুন মেসেজ আসলেই ব্রাউজারকে অডিও সোর্স সিঙ্ক করিয়ে প্লে করানো হবে
+                                setTimeout(playLiveAudio, 600);
                             }
                         });
                         chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -250,8 +243,8 @@ DASHBOARD_TEMPLATE = """
                 chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>';
                 chatWindow.scrollTop = chatWindow.scrollHeight;
                 
-                // ম্যানুয়াল কম্যান্ডের উত্তরও ড্যাশবোর্ডে প্লে হবে
-                speakText(data.reply);
+                // ম্যানুয়াল কম্যান্ড হ্যান্ডল করার পর একটু টাইমিং নিয়ে অডিও ফায়ার হবে
+                setTimeout(playLiveAudio, 400);
                 
                 input.value = ''; input.disabled = false; btn.disabled = false; isSending = false;
                 input.focus(); 
@@ -265,6 +258,8 @@ DASHBOARD_TEMPLATE = """
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
         setInterval(updateHub, 1000); 
         updateHub();
+        
+        // প্রথমবার ইউজার ইন্টারেকশন নেওয়ার জন্য ইনপুট ফোকাস
         document.getElementById('chat-msg').focus();
     </script>
 </body>
@@ -274,6 +269,21 @@ DASHBOARD_TEMPLATE = """
 @app.route('/', methods=['GET'])
 def home():
     return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL), 200
+
+# ড্যাশবোর্ডের জন্য লাইভ জেনারেট হওয়া অডিও ট্র্যাকিং রাউট
+@app.route('/get-tts-audio', methods=['GET'])
+def get_tts_audio():
+    global current_tts_audio
+    if current_tts_audio is None:
+        return jsonify({"error": "No voice yet"}), 404
+    return send_file(io.BytesIO(current_tts_audio), mimetype="audio/mpeg")
+
+@app.route('/get-voice-track', methods=['GET'])
+def get_voice_track():
+    global last_recorded_wav
+    if last_recorded_wav is None:
+        return jsonify({"error": "No track yet"}), 404
+    return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
@@ -352,7 +362,7 @@ def transcribe_and_process(audio_bytes):
         return jsonify({"error": str(e)}), 500
 
 def process_with_groq(user_message, source="manual"):
-    global chat_history, ui_pending_messages
+    global chat_history, ui_pending_messages, current_tts_audio
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
         res = requests.get(FIREBASE_URL, timeout=1.5)
@@ -386,6 +396,12 @@ def process_with_groq(user_message, source="manual"):
         requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
+        
+        # সার্ভার এন্ডে পিওর গুগল টিটিএস অডিও ফাইল জেনারেট করে মেমরিতে সেভ করা হচ্ছে
+        tts = gTTS(text=ai_reply, lang='en', slow=False)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        current_tts_audio = fp.getvalue()  # গ্লোবাল ভেরিয়েবলে র এমপি৩ ডাটা রাইট হলো
         
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
