@@ -1,8 +1,6 @@
 import os
 import json
-import base64
 import time
-import numpy as np
 from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
@@ -14,18 +12,12 @@ app = Flask(__name__)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# Global Hardware & Stream States
-audio_buffer = bytearray()
-SILENCE_THRESHOLD = 700  
-SILENCE_DURATION_CHUNKS = 12  
-silent_chunks_count = 0
-has_speech_started = False
+# Global System States
 last_recorded_wav = None
-
-# Chat History & Connection Tracking
 chat_history = []
 MAX_HISTORY_LENGTH = 5 
 last_esp32_seen = 0  
+esp32_current_state = "Disconnected" # Disconnected, Online, Streaming
 ui_pending_messages = []
 
 DASHBOARD_TEMPLATE = """
@@ -43,6 +35,8 @@ DASHBOARD_TEMPLATE = """
             --card-bg: rgba(255, 255, 255, 0.05);
             --text: #f5f5f5;
             --green-glow: #00ff87;
+            --amber-glow: #ff9f43;
+            --red-glow: #ff2e63;
         }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body { 
@@ -60,13 +54,17 @@ DASHBOARD_TEMPLATE = """
         }
         header h1 { margin: 0; font-size: 28px; letter-spacing: 2px; font-weight: 800; color: #fff; }
         .conn-badge {
-            background: rgba(0,0,0,0.4); border: 1px solid #ff2e63; color: #ff2e63;
+            background: rgba(0,0,0,0.4); border: 1px solid var(--red-glow); color: var(--red-glow);
             padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600;
             display: flex; align-items: center; gap: 8px; transition: 0.3s;
         }
         .conn-badge.online {
             border-color: var(--green-glow); color: var(--green-glow);
             box-shadow: 0 0 10px rgba(0, 255, 135, 0.2);
+        }
+        .conn-badge.streaming {
+            border-color: var(--amber-glow); color: var(--amber-glow);
+            box-shadow: 0 0 10px rgba(255, 159, 67, 0.3);
         }
         .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
@@ -83,6 +81,7 @@ DASHBOARD_TEMPLATE = """
         }
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
+        
         .audio-monitor-card {
             background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main);
             border-radius: 15px; padding: 12px 20px; display: flex; align-items: center;
@@ -90,6 +89,7 @@ DASHBOARD_TEMPLATE = """
         }
         .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
         .audio-monitor-card audio { height: 30px; border-radius: 5px; outline: none; }
+
         .chat-card {
             background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1);
             display: flex; flex-direction: column; height: 430px; overflow: hidden;
@@ -130,12 +130,12 @@ DASHBOARD_TEMPLATE = """
             <div class="relay-card OFF"><span>Loading Sync...</span></div>
         </div>
         <div class="audio-monitor-card">
-            <span><i class="fas fa-headphones-simple"></i> Listen Live Microphone Audio:</span>
+            <span><i class="fas fa-headphones-simple"></i> Live Voice Input Track:</span>
             <audio id="audio-player" controls src="/get-voice-track"></audio>
         </div>
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! RoomX Unified Hub is online. Send a text or use your ESP32 Voice mic.</div>
+                <div class="msg ai-msg">Welcome back Zion! Unified Hub Status System is fully sync'd.</div>
             </div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
@@ -161,7 +161,6 @@ DASHBOARD_TEMPLATE = """
                         { id: "relay_4", name: "Socket", icon: "fa-plug" }
                     ];
                     
-                    // ফিক্সড: জিংজা কনফ্লিক্ট এড়াতে পিওর স্ট্রিং কনক্যাটিনেশন মেথড
                     devices.forEach(function(dev) {
                         const state = data[dev.id] || "OFF";
                         let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
@@ -179,22 +178,27 @@ DASHBOARD_TEMPLATE = """
                 .then(data => {
                     const badge = document.getElementById('conn-status');
                     const text = document.getElementById('conn-text');
-                    if(data.esp32_online) {
+                    
+                    // রিয়েল-টাইম ৩-স্টেট কানেকশন সিগন্যাল হ্যান্ডলিং লজিক
+                    badge.classList.remove('online', 'streaming');
+                    if(data.state === "Streaming") {
+                        badge.classList.add('streaming');
+                        text.innerText = "Voice Transmit Active...";
+                    } else if(data.state === "Online") {
                         badge.classList.add('online');
                         text.innerText = "HomeX Connected to Internet";
                     } else {
-                        badge.classList.remove('online');
                         text.innerText = "HomeX Disconnected";
                     }
 
                     if (data.new_messages && data.new_messages.length > 0) {
                         data.new_messages.forEach(function(msg) {
                             if(msg.type === 'voice_start') {
-                                chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> ESP32 Audio Streaming...</div>';
+                                chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
                             } else {
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
-                                audioPlayer.load();
+                                audioPlayer.load(); // ভয়েস ট্র্যাকার রিলোড
                             }
                         });
                         chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -231,7 +235,7 @@ DASHBOARD_TEMPLATE = """
         }
         
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateHub, 1500);
+        setInterval(updateHub, 1000); // আরও রিয়েল-টাইম করতে ১ সেকেন্ডে রিফ্রেশ
         updateHub();
         document.getElementById('chat-msg').focus();
     </script>
@@ -247,49 +251,60 @@ def home():
 def get_voice_track():
     global last_recorded_wav
     if last_recorded_wav is None:
-        return jsonify({"error": "No track"}), 404
+        return jsonify({"error": "No track yet"}), 404
     return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
-    global ui_pending_messages, last_esp32_seen
-    is_online = (time.time() - last_esp32_seen) < 5.0
+    global ui_pending_messages, last_esp32_seen, esp32_current_state
+    
+    # লাস্ট ৫ সেকেন্ডে কোনো রেসপন্স না আসলে ডিসকানেক্টেড
+    if time.time() - last_esp32_seen > 5.0:
+        esp32_current_state = "Disconnected"
+        
     messages_to_send = list(ui_pending_messages)
     ui_pending_messages.clear()
-    return jsonify({"esp32_online": is_online, "new_messages": messages_to_send})
+    return jsonify({"state": esp32_current_state, "new_messages": messages_to_send})
 
+# এন্ডপয়েন্ট ১: হার্টবিট রিসিভার (ESP32 ওয়াইফাইয়ে যুক্ত হলেই এটি হিট করবে)
+@app.route('/esp32-ping', methods=['POST'])
+def esp32_ping():
+    global last_esp32_seen, esp32_current_state
+    last_esp32_seen = time.time()
+    if esp32_current_state != "Streaming":
+        esp32_current_state = "Online"
+    return jsonify({"status": "acknowledged"}), 200
+
+# এন্ডপয়েন্ট ২: মেইন ভয়েস ও টেক্সট কমান্ড প্রসেসর
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
-    global last_esp32_seen, ui_pending_messages
+    global last_esp32_seen, ui_pending_messages, esp32_current_state
     
-    raw_data = request.get_data()
-    if not raw_data:
-        return jsonify({"error": "Empty body"}), 400
-        
-    try:
-        data = json.loads(raw_data.decode('utf-8'))
-    except Exception as e:
-        return jsonify({"error": "Malformed JSON payload"}), 400
-        
-    audio_base64 = data.get("audio")
-    command_text = data.get("text", "").strip()
+    last_esp32_seen = time.time()
     
-    if command_text and not audio_base64:
-        return process_with_groq(command_text, source="manual")
+    # চেক করা হচ্ছে ইনপুট কি ম্যানুয়াল টেক্সট নাকি ESP32 এর র বাইনারি স্ট্রিম
+    if request.headers.get('Content-Type') == 'application/octet-stream':
+        esp32_current_state = "Streaming"
+        ui_pending_messages.append({"type": "voice_start"})
         
-    if audio_base64:
-        last_esp32_seen = time.time()  
-        try:
-            audio_bytes = base64.b64decode(audio_base64)
-            if len(audio_bytes) >= 10000:
-                ui_pending_messages.append({"type": "voice_start"})
-                return transcribe_and_process(audio_bytes)
-        except:
-            return jsonify({"error": "Invalid base64 encoding"}), 400
+        # সরাসরি ইনকামিং র বাইনারি ডেটা রিড করা হচ্ছে (ESP32 এর ওপর কোনো লোড নেই)
+        audio_bytes = request.get_data()
+        
+        if len(audio_bytes) < 2000:
+            esp32_current_state = "Online"
+            return jsonify({"error": "Audio track too short"}), 400
             
-    return jsonify({"status": "Success", "esp32_online": True}), 200
-
-void_bytes_history = bytearray()
+        response = transcribe_and_process(audio_bytes)
+        esp32_current_state = "Online"
+        return response
+    else:
+        # ম্যানুয়াল চ্যাট ইনপুট প্রসেস
+        data = request.get_json() or {}
+        command_text = data.get("text", "").strip()
+        if command_text:
+            return process_with_groq(command_text, source="manual")
+            
+    return jsonify({"error": "Invalid request"}), 400
 
 def transcribe_and_process(audio_bytes):
     global last_recorded_wav
@@ -310,6 +325,7 @@ def transcribe_and_process(audio_bytes):
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
         
+        # সার্ভার নিজে থেকে সম্পূর্ণ স্ট্যান্ডার্ড WAV ফাইল স্ট্রাকচার তৈরি করছে
         last_recorded_wav = header + audio_bytes
         wav_io = io.BytesIO(last_recorded_wav)
         wav_io.name = "audio.wav"
@@ -322,7 +338,7 @@ def transcribe_and_process(audio_bytes):
         
         user_text = transcription.text.strip() if transcription.text else ""
         if not user_text or len(user_text) < 2:
-            return jsonify({"status": "Ignored", "reason": "Empty text"}), 200
+            return jsonify({"status": "Ignored", "reason": "Empty transcription"}), 200
             
         return process_with_groq(user_text, source="voice")
     except Exception as e:
@@ -332,9 +348,6 @@ def process_with_groq(user_message, source="manual"):
     global chat_history, ui_pending_messages
     
     clean_message = user_message.strip().replace(".", "").replace(",", "")
-    if not clean_message or len(clean_message) < 3:
-        return jsonify({"status": "Ignored"}), 200
-
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
         res = requests.get(FIREBASE_URL, timeout=1.5)
@@ -345,7 +358,7 @@ def process_with_groq(user_message, source="manual"):
     Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
     Current States: {json.dumps(current_relays)}
     Rules: 
-    1. Extract target device and state command even if input has minor acoustic conversion flaws.
+    1. Extract target device and state command.
     2. Maintain all other relay assignments exactly as they are in the CURRENT RELAY STATES.
     3. Output JSON ONLY. Scheme: {{"reply": "text", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
 
