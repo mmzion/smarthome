@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify, render_template_string, send_file, ma
 from groq import Groq
 import requests
 import io
+from gtts import gTTS  # Google Text-to-Speech লাইব্রেরি
 
 app = Flask(__name__)
 
@@ -197,9 +198,6 @@ DASHBOARD_TEMPLATE = """
                             } else {
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
-                                
-                                // ফিক্সড: ক্যাশ বাস্টিং যোগ করা হলো যাতে প্লেয়ার ৪-৫ সেকেন্ডেরই নতুন পুরো ট্র্যাক লোড করে
-                                audioPlayer.src = "/get-voice-track?t=" + new Date().getTime();
                                 audioPlayer.load(); 
                             }
                         });
@@ -254,21 +252,13 @@ def get_voice_track():
     global last_recorded_wav
     if last_recorded_wav is None:
         return jsonify({"error": "No track yet"}), 404
-    
-    # ফিক্সড: ব্রাউজারকে ফাইলের সঠিক সাইজ এবং নো-ক্যাশ হেডার পাস করা হচ্ছে যেন প্লেয়ারের ডিউরেশন ড্রপ না করে
-    response = make_response(send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav"))
-    response.headers["Content-Length"] = len(last_recorded_wav)
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
+    return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
     
-    # ৫ সেকেন্ডের ট্র্যাক প্রসেস হতে অতিরিক্ত সময়ের কারণে লিমিট ৭ সেকেন্ড করা হলো
-    if time.time() - last_esp32_seen > 7.0:
+    if time.time() - last_esp32_seen > 5.0:
         esp32_current_state = "Disconnected"
         
     messages_to_send = list(ui_pending_messages)
@@ -299,9 +289,8 @@ def handle_command():
             esp32_current_state = "Online"
             return jsonify({"error": "Audio track too short"}), 400
             
-        response = transcribe_and_process(audio_bytes)
-        esp32_current_state = "Online"
-        return response
+        # ESP32 থেকে রিকোয়েস্ট আসলে এটি সরাসরি Google TTS জেনারেট করে MP3 বাইনারি পাঠাবে
+        return transcribe_and_process(audio_bytes, output_audio=True)
     else:
         data = request.get_json() or {}
         command_text = data.get("text", "").strip()
@@ -310,7 +299,7 @@ def handle_command():
             
     return jsonify({"error": "Invalid request"}), 400
 
-def transcribe_and_process(audio_bytes):
+def transcribe_and_process(audio_bytes, output_audio=False):
     global last_recorded_wav
     try:
         duration = len(audio_bytes)
@@ -343,11 +332,11 @@ def transcribe_and_process(audio_bytes):
         if not user_text or len(user_text) < 2:
             return jsonify({"status": "Ignored", "reason": "Empty transcription"}), 200
             
-        return process_with_groq(user_text, source="voice")
+        return process_with_groq(user_text, source="voice", output_audio=output_audio)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-def process_with_groq(user_message, source="manual"):
+def process_with_groq(user_message, source="manual", output_audio=False):
     global chat_history, ui_pending_messages
     
     clean_message = user_message.strip().replace(".", "").replace(",", "")
@@ -388,6 +377,16 @@ def process_with_groq(user_message, source="manual"):
         
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
+            
+        # Google Text-to-Speech ইন্টিগ্রেশন: টেক্সট রেসপন্সটিকে লাইভ অডিওতে কনভার্ট করা হচ্ছে
+        if output_audio:
+            tts = gTTS(text=ai_reply, lang='en', slow=False)
+            audio_fp = io.BytesIO()
+            tts.write_to_fp(audio_fp)
+            audio_fp.seek(0)
+            
+            # সরাসরি র স্পিকার ফ্রেন্ডলি অডিও বাইনারি পাঠানো হচ্ছে
+            return send_file(audio_fp, mimetype="audio/mpeg")
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
     except:
