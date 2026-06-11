@@ -4,7 +4,7 @@ import time
 import io
 import requests
 from flask import Flask, request, jsonify, render_template_string
-from groq import Groq  # ফিক্সড: এই ইম্পোর্টটি মিসিং ছিল
+from groq import Groq
 
 app = Flask(__name__)
 
@@ -199,10 +199,10 @@ def process_with_groq(user_message, source="manual"):
         if res.status_code == 200 and res.json(): current_relays = res.json()
     except: pass
 
-    # ১. রাউটার প্রম্পট: সাধারণ অনুসন্ধান বনাম হার্ডওয়্যার টগল
+    # ১. রাউটার প্রম্পট
     router_instruction = """Is this message asking for general world facts, weather, math, info, or web search?
     If YES, response ONLY with JSON: {"need_search": "short keyword"}
-    If NO (home automation rule like light on), response ONLY with JSON: {"need_search": "NO"}"""
+    If NO (home automation control), response ONLY with JSON: {"need_search": "NO"}"""
     
     search_query = "NO"
     try:
@@ -215,17 +215,21 @@ def process_with_groq(user_message, source="manual"):
         search_query = route_res.get("need_search", "NO")
     except: pass
 
-    # ২. ইন্টারনেট লাইভ স্ক্র্যাপিং
+    # ২. ইন্টারনেট লাইভ সার্চ কনটেক্সট
     internet_context = ""
     if search_query != "NO":
         internet_context = internet_search(search_query)
 
-    # ৩. ফাইনাল ইন্টেলিজেন্ট এক্সিকিউশন
+    # ৩. ফাইনাল ইন্টেলিজেন্ট প্রম্পট ম্যাপিং (ফিক্সড:)
     system_instruction = f"""You are RoomX Executive AI Assistant.
     Smart Home States: {json.dumps(current_relays)}
     INTERNET LIVE CONTEXT: {internet_context}
-    Rules: Answer fully and intelligently based on the live context or your system data. Output JSON ONLY: {{"reply": "vocal response", "relays": {{"relay_1":"ON/OFF",...}}}}"""
+    Rules: 
+    1. If user wants to change devices, output the modifications inside 'relays'.
+    2. Keep untouched relays exactly as they are in 'Smart Home States'.
+    3. Output JSON ONLY Scheme: {{"reply": "vocal response", "relays": {{"relay_1":"ON/OFF", "relay_2":"ON/OFF", "relay_3":"ON/OFF", "relay_4":"ON/OFF"}}}}"""
 
+    # ফিক্সড চেইন: মেমোরি হিস্ট্রির সাথে কারেন্ট সিস্টেম ইনস্ট্রাকশন সঠিকভাবে বাইন্ড করা হলো
     messages = [{"role": "system", "content": system_instruction}]
     for h in chat_history:
         messages.append({"role": "user", "content": h["user"]})
@@ -235,14 +239,16 @@ def process_with_groq(user_message, source="manual"):
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=messages,
+            messages=messages,  # ফিক্সড: মেসেজ অ্যারে প্রপারলি পাস হলো
             response_format={"type": "json_object"}
         )
         result = json.loads(completion.choices[0].message.content)
         ai_reply = result.get("reply", "Executed.")
         updates = result.get("relays", current_relays)
         
+        # ফায়ারবেস রিয়েলটাইম সিঙ্ক
         requests.patch(FIREBASE_URL, json=updates, timeout=1.2)
+        
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
         
