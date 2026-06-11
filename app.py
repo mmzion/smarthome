@@ -12,15 +12,13 @@ app = Flask(__name__)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# Global System Stream States (3 সেকেন্ডের দেয়াল ভাঙার জন্য গ্লোবাল বাফার)
-audio_buffer = bytearray()
+# Global System States
 last_recorded_wav = None
 chat_history = []
-MAX_HISTORY_LENGTH = 5  
-last_esp32_seen = 0   
-esp32_current_state = "Disconnected" 
+MAX_HISTORY_LENGTH = 5 
+last_esp32_seen = 0  
+esp32_current_state = "Disconnected" # Disconnected, Online, Streaming
 ui_pending_messages = []
-ui_notification_sent = False
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -60,8 +58,14 @@ DASHBOARD_TEMPLATE = """
             padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600;
             display: flex; align-items: center; gap: 8px; transition: 0.3s;
         }
-        .conn-badge.online { border-color: var(--green-glow); color: var(--green-glow); box-shadow: 0 0 10px rgba(0, 255, 135, 0.2); }
-        .conn-badge.streaming { border-color: var(--amber-glow); color: var(--amber-glow); box-shadow: 0 0 10px rgba(255, 159, 67, 0.3); }
+        .conn-badge.online {
+            border-color: var(--green-glow); color: var(--green-glow);
+            box-shadow: 0 0 10px rgba(0, 255, 135, 0.2);
+        }
+        .conn-badge.streaming {
+            border-color: var(--amber-glow); color: var(--amber-glow);
+            box-shadow: 0 0 10px rgba(255, 159, 67, 0.3);
+        }
         .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
         .relay-card { 
@@ -106,6 +110,7 @@ DASHBOARD_TEMPLATE = """
             width: 45px; height: 45px; border-radius: 50%; cursor: pointer;
             display: flex; align-items: center; justify-content: center; transition: 0.3s;
         }
+        .input-area button:hover { transform: scale(1.1); }
         @media (max-width: 600px) {
             header { flex-direction: column; gap: 8px; }
             .grid { grid-template-columns: repeat(2, 1fr); }
@@ -130,7 +135,7 @@ DASHBOARD_TEMPLATE = """
         </div>
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! Pure Push-to-Talk Stream mode active. Hold Boot button and speak as long as you want.</div>
+                <div class="msg ai-msg">Welcome back Zion! Unified Hub Status System is fully sync'd.</div>
             </div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
@@ -155,6 +160,7 @@ DASHBOARD_TEMPLATE = """
                         { id: "relay_3", name: "Fan", icon: "fa-fan" },
                         { id: "relay_4", name: "Socket", icon: "fa-plug" }
                     ];
+                    
                     devices.forEach(function(dev) {
                         const state = data[dev.id] || "OFF";
                         let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
@@ -162,7 +168,7 @@ DASHBOARD_TEMPLATE = """
                         grid.innerHTML += '<div class="relay-card ' + state + '">' +
                             '<i class="fas ' + dev.icon + ' ' + spinClass + '"></i>' +
                             '<span>' + dev.name + '</span>' +
-                            '<br><span class="status" style="margin-top:8px; display:block; font-weight:bold;">' + state + '</span>' +
+                            '<span class="status">' + state + '</span>' +
                             '</div>';
                     });
                 });
@@ -172,6 +178,8 @@ DASHBOARD_TEMPLATE = """
                 .then(data => {
                     const badge = document.getElementById('conn-status');
                     const text = document.getElementById('conn-text');
+                    
+                    // রিয়েল-টাইম ৩-স্টেট কানেকশন সিগন্যাল হ্যান্ডলিং লজিক
                     badge.classList.remove('online', 'streaming');
                     if(data.state === "Streaming") {
                         badge.classList.add('streaming');
@@ -190,7 +198,7 @@ DASHBOARD_TEMPLATE = """
                             } else {
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
-                                audioPlayer.load();
+                                audioPlayer.load(); // ভয়েস ট্র্যাকার রিলোড
                             }
                         });
                         chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -203,9 +211,11 @@ DASHBOARD_TEMPLATE = """
             const btn = document.getElementById('send-btn');
             const cmd = input.value.trim();
             if(!cmd || isSending) return;
+
             isSending = true; input.disabled = true; btn.disabled = true;
             chatWindow.innerHTML += '<div class="msg user-msg">' + cmd + '</div>';
             chatWindow.scrollTop = chatWindow.scrollHeight;
+
             fetch('/voice-command', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -215,11 +225,17 @@ DASHBOARD_TEMPLATE = """
             .then(data => {
                 chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>';
                 chatWindow.scrollTop = chatWindow.scrollHeight;
-                input.value = ''; input.disabled = false; btn.disabled = false; isSending = false; input.focus(); updateHub();
+                input.value = ''; input.disabled = false; btn.disabled = false; isSending = false;
+                input.focus(); 
+                updateHub();
+            })
+            .catch(() => {
+                input.disabled = false; btn.disabled = false; isSending = false; input.focus();
             });
         }
+        
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateHub, 1200);
+        setInterval(updateHub, 1000); // আরও রিয়েল-টাইম করতে ১ সেকেন্ডে রিফ্রেশ
         updateHub();
         document.getElementById('chat-msg').focus();
     </script>
@@ -241,12 +257,16 @@ def get_voice_track():
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
+    
+    # লাস্ট ৫ সেকেন্ডে কোনো রেসপন্স না আসলে ডিসকানেক্টেড
     if time.time() - last_esp32_seen > 5.0:
         esp32_current_state = "Disconnected"
+        
     messages_to_send = list(ui_pending_messages)
     ui_pending_messages.clear()
     return jsonify({"state": esp32_current_state, "new_messages": messages_to_send})
 
+# এন্ডপয়েন্ট ১: হার্টবিট রিসিভার (ESP32 ওয়াইফাইয়ে যুক্ত হলেই এটি হিট করবে)
 @app.route('/esp32-ping', methods=['POST'])
 def esp32_ping():
     global last_esp32_seen, esp32_current_state
@@ -255,52 +275,39 @@ def esp32_ping():
         esp32_current_state = "Online"
     return jsonify({"status": "acknowledged"}), 200
 
+# এন্ডপয়েন্ট ২: মেইন ভয়েস ও টেক্সট কমান্ড প্রসেসর
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
-    global last_esp32_seen, ui_pending_messages, esp32_current_state, audio_buffer, ui_notification_sent
+    global last_esp32_seen, ui_pending_messages, esp32_current_state
     
     last_esp32_seen = time.time()
     
+    # চেক করা হচ্ছে ইনপুট কি ম্যানুয়াল টেক্সট নাকি ESP32 এর র বাইনারি স্ট্রিম
     if request.headers.get('Content-Type') == 'application/octet-stream':
         esp32_current_state = "Streaming"
-        chunk_bytes = request.get_data()
+        ui_pending_messages.append({"type": "voice_start"})
         
-        # ট্র্যাকার ফিক্স: ইউজার যখনই ফিজিক্যালি বাটন ছেড়ে দেবে (০ বাইটের এন্ড-প্যাকেট আসবে) তখনই বাফার লক হবে
-        if len(chunk_bytes) == 0:
-            if len(audio_buffer) >= 15000:
-                full_audio = bytes(audio_buffer)
-                
-                # সম্পূর্ণ সেশন প্যারামিটার রিসেট (পরবর্তী কমান্ডের জন্য)
-                audio_buffer = bytearray()
-                ui_notification_sent = False
-                esp32_current_state = "Online"
-                
-                # ক্রcritical রিটার্ন ট্রিগার চেইন
-                return transcribe_and_process(full_audio)
-            else:
-                audio_buffer = bytearray()
-                ui_notification_sent = False
-                esp32_current_state = "Online"
-                return jsonify({"status": "Ignored", "reason": "Too short"}), 200
+        # সরাসরি ইনকামিং র বাইনারি ডেটা রিড করা হচ্ছে (ESP32 এর ওপর কোনো লোড নেই)
+        audio_bytes = request.get_data()
         
-        # সাইলেন্স লজিক সম্পূর্ণ ড্রপ করে অনবরত অডিও বাফার এক্সটেন্ড করা
-        if len(chunk_bytes) > 0:
-            audio_buffer.extend(chunk_bytes)
-            if not ui_notification_sent:
-                ui_pending_messages.append({"type": "voice_start"})
-                ui_notification_sent = True
-                    
-        return jsonify({"status": "Streaming"}), 200
+        if len(audio_bytes) < 2000:
+            esp32_current_state = "Online"
+            return jsonify({"error": "Audio track too short"}), 400
+            
+        response = transcribe_and_process(audio_bytes)
+        esp32_current_state = "Online"
+        return response
     else:
+        # ম্যানুয়াল চ্যাট ইনপুট প্রসেস
         data = request.get_json() or {}
         command_text = data.get("text", "").strip()
         if command_text:
             return process_with_groq(command_text, source="manual")
             
-    return jsonify({"error": "Invalid payload"}), 400
+    return jsonify({"error": "Invalid request"}), 400
 
 def transcribe_and_process(audio_bytes):
-    global last_recorded_wav, esp32_current_state
+    global last_recorded_wav
     try:
         duration = len(audio_bytes)
         header = bytearray(44)
@@ -318,6 +325,7 @@ def transcribe_and_process(audio_bytes):
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
         
+        # সার্ভার নিজে থেকে সম্পূর্ণ স্ট্যান্ডার্ড WAV ফাইল স্ট্রাকচার তৈরি করছে
         last_recorded_wav = header + audio_bytes
         wav_io = io.BytesIO(last_recorded_wav)
         wav_io.name = "audio.wav"
@@ -329,16 +337,11 @@ def transcribe_and_process(audio_bytes):
         )
         
         user_text = transcription.text.strip() if transcription.text else ""
-        print(f"DEBUG - Whisper Decoded: {user_text}")
-        
         if not user_text or len(user_text) < 2:
-            esp32_current_state = "Online"
             return jsonify({"status": "Ignored", "reason": "Empty transcription"}), 200
             
         return process_with_groq(user_text, source="voice")
     except Exception as e:
-        print(f"DEBUG - Whisper Error: {str(e)}")
-        esp32_current_state = "Online"
         return jsonify({"error": str(e)}), 500
 
 def process_with_groq(user_message, source="manual"):
@@ -384,8 +387,7 @@ def process_with_groq(user_message, source="manual"):
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
-    except Exception as e:
-        print(f"DEBUG - Llama Error: {str(e)}")
+    except:
         return jsonify({"status": "JSON Parse Error"}), 500
 
 if __name__ == '__main__':
