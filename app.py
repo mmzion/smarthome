@@ -5,7 +5,6 @@ import io
 import requests
 from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
-from gtts import gTTS
 
 app = Flask(__name__)
 
@@ -16,31 +15,28 @@ FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 # Global System States
 last_recorded_wav = None
 chat_history = []
-MAX_HISTORY_LENGTH = 7 # অ্যাসিস্ট্যান্টের মেমোরি কনটেক্সট বাড়ানোর জন্য হিস্ট্রি লেন্থ বাড়ানো হলো
+MAX_HISTORY_LENGTH = 7 
 last_esp32_seen = 0  
 esp32_current_state = "Disconnected" 
 ui_pending_messages = []
 current_tts_audio = None
 
-# --- ইন্টারনেট সার্চ ইঞ্জিন (ফ্রি ও রিয়েল-টাইম) ---
+# --- ফ্রি ইন্টারনেট সার্চ ইঞ্জিন ---
 def internet_search(query):
     try:
-        # DDG API ব্যবহার করে যেকোনো লাইভ ইনফরমেশন স্ক্র্যাপ করার অত্যন্ত ফাস্ট মেকানিজম
         url = f"https://api.duckduckgo.com/?q={query}&format=json&no_html=1&skip_disambig=1"
         res = requests.get(url, timeout=2.5)
         if res.status_code == 200:
             data = res.json()
-            # যদি সরাসরি ডিরেক্ট টেক্সট আনসার পাওয়া যায়
             if data.get("AbstractText"):
                 return data["AbstractText"]
-            # বিকল্প ব্যাকআপ সোর্স (রিলিজড টপিকস)
             elif data.get("RelatedTopics") and len(data["RelatedTopics"]) > 0:
-                return data["RelatedTopics"][0].get("Text", "No deep info found.")
-        return "I search the web but couldn't get definitive real-time facts."
-    except Exception as e:
-        return f"Internet search temporarily unavailable: {str(e)}"
+                return data["RelatedTopics"][0].get("Text", "No direct context found.")
+        return "I couldn't retrieve real-time facts at the moment."
+    except:
+        return "Internet search integration timeout."
 
-# --- (ড্যাশবোর্ড টেমপ্লেট আগের মতোই হুবহু অপরিবর্তিত থাকবে) ---
+# --- ইউনিফাইড ড্যাশবোর্ড UI টেমপ্লেট ---
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -66,10 +62,6 @@ DASHBOARD_TEMPLATE = """
         .relay-card.ON { background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main); box-shadow: 0 0 15px rgba(157, 80, 187, 0.3); }
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
-        .audio-monitor-card { background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main); border-radius: 15px; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: -5px; }
-        .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
-        .voice-settings { display: flex; align-items: center; gap: 10px; }
-        .btn-voice { background: #00ff87; color: #000; border: none; padding: 6px 14px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 12px; }
         .chat-card { background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; height: 430px; overflow: hidden; }
         .chat-window { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
         .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
@@ -79,23 +71,20 @@ DASHBOARD_TEMPLATE = """
         .input-area { padding: 15px; background: rgba(0,0,0,0.2); display: flex; gap: 10px; }
         .input-area input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 50px; padding: 12px 20px; color: white; outline: none; font-size: 15px; }
         .input-area input:focus { border-color: var(--purple-main); }
-        .input-area button { background: var(--purple-main); color: white; border: none; width: 45px; height: 45px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.3s; }
+        .input-area button { background: var(--purple-main); color: white; border: none; width: 45px; height: 45px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; }
     </style>
 </head>
 <body>
     <header><h1>RoomX</h1><div id="conn-status" class="conn-badge"><i class="fas fa-circle"></i> <span id="conn-text">HomeX Disconnected</span></div></header>
     <div class="container">
         <div id="device-grid" class="grid"><div class="relay-card OFF"><span>Loading Sync...</span></div></div>
-        <div class="audio-monitor-card"><span><i class="fas fa-volume-high"></i> Dashboard Agent Real Audio Player:</span><div class="voice-settings"><button id="play-btn" class="btn-voice" onclick="playLiveAudio()">▶ Play Voice Response</button></div></div>
-        <audio id="dashboard-speaker" style="display:none;"></audio>
         <div class="chat-card">
-            <div class="chat-window" id="chat-window"><div class="msg ai-msg">Welcome back Zion! Unified Hub Status System is fully sync'd.</div></div>
+            <div class="chat-window" id="chat-window"><div class="msg ai-msg">Welcome back Zion! Full Hub Assistant Engine Online.</div></div>
             <div class="input-area"><input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)"><button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button></div>
         </div>
     </div>
     <script>
-        const chatWindow = document.getElementById('chat-window'); const dSpk = document.getElementById('dashboard-speaker'); let isSending = false;
-        function playLiveAudio() { dSpk.src = "/get-tts-audio?t=" + new Date().getTime(); dSpk.load(); dSpk.play().catch(function(err){}); }
+        const chatWindow = document.getElementById('chat-window'); let isSending = false;
         function updateHub() {
             fetch('{{ fb_url }}').then(res => res.json()).then(data => {
                 const grid = document.getElementById('device-grid'); grid.innerHTML = '';
@@ -109,12 +98,12 @@ DASHBOARD_TEMPLATE = """
                 const badge = document.getElementById('conn-status'); const text = document.getElementById('conn-text');
                 badge.classList.remove('online', 'streaming');
                 if(data.state === "Streaming") { badge.classList.add('streaming'); text.innerText = "Voice Transmit Active..."; }
-                else if(data.state === "Online") { badge.classList.add('online'); text.innerText = "HomeX Connected to Internet"; }
+                else if(data.state === "Online") { badge.classList.add('online'); text.innerText = "HomeX Connected"; }
                 else { text.innerText = "HomeX Disconnected"; }
                 if (data.new_messages && data.new_messages.length > 0) {
                     data.new_messages.forEach(function(msg) {
-                        if(msg.type === 'voice_start') { chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>'; }
-                        else { chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div><div class="msg ai-msg">' + msg.ai + '</div>'; setTimeout(playLiveAudio, 600); }
+                        if(msg.type === 'voice_start') { chatWindow.innerHTML += '<div class="msg system-msg">🎙️ Processing Audio...</div>'; }
+                        else { chatWindow.innerHTML += '<div class="msg user-msg">' + msg.user + '</div><div class="msg ai-msg">' + msg.ai + '</div>'; }
                     });
                     chatWindow.scrollTop = chatWindow.scrollHeight;
                 }
@@ -126,7 +115,7 @@ DASHBOARD_TEMPLATE = """
             fetch('/voice-command', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ text: cmd }) })
             .then(res => res.json()).then(data => {
                 chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>'; chatWindow.scrollTop = chatWindow.scrollHeight;
-                setTimeout(playLiveAudio, 400); input.value = ''; input.disabled = false; btn.disabled = false; isSending = false; input.focus(); updateHub();
+                input.value = ''; input.disabled = false; btn.disabled = false; isSending = false; input.focus(); updateHub();
             }).catch(() => { input.disabled = false; btn.disabled = false; isSending = false; input.focus(); });
         }
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
@@ -137,27 +126,13 @@ DASHBOARD_TEMPLATE = """
 """
 
 @app.route('/', methods=['GET'])
-def home():
+def home(): 
     return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL), 200
-
-@app.route('/get-tts-audio', methods=['GET'])
-def get_tts_audio():
-    global current_tts_audio
-    if current_tts_audio is None:
-        return jsonify({"error": "No voice yet"}), 404
-    return send_file(io.BytesIO(current_tts_audio), mimetype="audio/mpeg")
-
-@app.route('/get-voice-track', methods=['GET'])
-def get_voice_track():
-    global last_recorded_wav
-    if last_recorded_wav is None:
-        return jsonify({"error": "No track yet"}), 404
-    return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
-    if time.time() - last_esp32_seen > 5.0:
+    if time.time() - last_esp32_seen > 6.0:
         esp32_current_state = "Disconnected"
     messages_to_send = list(ui_pending_messages)
     ui_pending_messages.clear()
@@ -183,7 +158,7 @@ def handle_command():
         
         if len(audio_bytes) < 2000:
             esp32_current_state = "Online"
-            return jsonify({"error": "Audio track too short"}), 400
+            return jsonify({"error": "Audio short"}), 400
             
         return transcribe_and_process(audio_bytes)
     else:
@@ -192,10 +167,9 @@ def handle_command():
         if command_text:
             return process_with_groq(command_text, source="manual")
             
-    return jsonify({"error": "Invalid request"}), 400
+    return jsonify({"error": "Bad request"}), 400
 
 def transcribe_and_process(audio_bytes):
-    global last_recorded_wav
     try:
         duration = len(audio_bytes)
         header = bytearray(44)
@@ -213,37 +187,33 @@ def transcribe_and_process(audio_bytes):
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
         
-        last_recorded_wav = header + audio_bytes
-        wav_io = io.BytesIO(last_recorded_wav)
+        wav_io = io.BytesIO(header + audio_bytes)
         wav_io.name = "audio.wav"
 
         transcription = groq_client.audio.transcriptions.create(
-            file=wav_io,
-            model="whisper-large-v3",
-            language="en"
+            file=wav_io, model="whisper-large-v3", language="en"
         )
         user_text = transcription.text.strip() if transcription.text else ""
         if not user_text or len(user_text) < 2:
-            return jsonify({"status": "Ignored", "reason": "Empty transcription"}), 200
+            return jsonify({"status": "Ignored"}), 200
             
         return process_with_groq(user_text, source="voice")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 def process_with_groq(user_message, source="manual"):
-    global chat_history, ui_pending_messages, current_tts_audio
+    global chat_history, ui_pending_messages
     
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
-        res = requests.get(FIREBASE_URL, timeout=1.5)
+        res = requests.get(FIREBASE_URL, timeout=1.2)
         if res.status_code == 200 and res.json(): current_relays = res.json()
     except: pass
 
-    # ১. প্রথম ধাপে রাউটার প্রম্পট: এআই বুঝবে সাধারণ প্রশ্ন নাকি রিলে কন্ট্রোল কমান্ড
-    router_instruction = """You are an advanced Smart Home Assistant routing engine.
-    Analyze the user message. Is it asking for general world knowledge, calculations, live status, or internet search?
-    If YES, response exactly with: {"need_search": "the specific short search term"}
-    If NO (it's just a regular home automation control command like 'turn on fan'), response exactly with: {"need_search": "NO"}"""
+    # ১. রাউটার প্রম্পট: এআই বুঝবে সাধারণ প্রশ্ন নাকি রিলে কন্ট্রোল কমান্ড
+    router_instruction = """Is this message asking for general world facts, weather, math, info, or web search?
+    If YES, response ONLY with JSON: {"need_search": "short keyword"}
+    If NO (home automation rule like light on), response ONLY with JSON: {"need_search": "NO"}"""
     
     search_query = "NO"
     try:
@@ -256,26 +226,16 @@ def process_with_groq(user_message, source="manual"):
         search_query = route_res.get("need_search", "NO")
     except: pass
 
-    # ২. যদি লাইভ ইনফরমেশন লাগে, তবে ব্যাকগ্রাউন্ডে ইন্টারনেট স্ক্র্যাপ হবে
+    # ২. ইন্টারনেট সার্চ অ্যাক্টিভেশন
     internet_context = ""
     if search_query != "NO":
-        print(f"🌐 Fetching live data from internet for: {search_query}")
         internet_context = internet_search(search_query)
 
-    # ৩. ফাইনাল প্রম্পট জেনারেশন (হোম অটোমেশন কন্ট্রোল + লাইভ ইন্টারনেট কনটেক্সট কম্বিনেশন)
-    system_instruction = f"""You are RoomX Advanced Intelligence Hub, fully integrated with smart home controls and world knowledge.
-    Smart Home Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
-    Current Home Relay States: {json.dumps(current_relays)}
-    
-    LIVE INTERNET SEARCH CONTEXT (Use this if user asks for factual info/updates/news):
-    ---
-    {internet_context}
-    ---
-    
-    Rules:
-    1. If user asks general questions or live data, formulate a helpful, concise answer based on the search context or your training data.
-    2. If user requests to toggle relays, update the states accordingly while preserving all other untouched states.
-    3. Output JSON ONLY. Scheme: {{"reply": "your crisp vocal answer here", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
+    # ৩. ফাইনাল প্রম্পট জেনারেশন
+    system_instruction = f"""You are RoomX Executive AI Assistant.
+    Smart Home States: {json.dumps(current_relays)}
+    INTERNET LIVE CONTEXT: {internet_context}
+    Rules: Answer fully and intelligently based on the live context. Output JSON ONLY: {{"reply": "vocal response", "relays": {{"relay_1":"ON/OFF",...}}}}"""
 
     messages = [{"role": "system", "content": system_instruction}]
     for h in chat_history:
@@ -290,27 +250,26 @@ def process_with_groq(user_message, source="manual"):
             response_format={"type": "json_object"}
         )
         result = json.loads(completion.choices[0].message.content)
-        ai_reply = result.get("reply", "Command executed successfully.")
+        ai_reply = result.get("reply", "Executed.")
         updates = result.get("relays", current_relays)
         
-        # ফায়ারবেস রিলে স্ট্যাটাস সিঙ্ক
-        requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
-        
+        requests.patch(FIREBASE_URL, json=updates, timeout=1.2)
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
-        
-        # গুগল টিটিএস এর অডিও জেনারেশন
-        tts = gTTS(text=ai_reply, lang='en', slow=False)
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        current_tts_audio = fp.getvalue() 
         
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
             
+            # --- মেমরিতে ফ্রি হেডারলেস পিসিএম জেনারেশন ---
+            tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q={requests.utils.quote(ai_reply)}"
+            audio_res = requests.get(tts_url, timeout=5.0)
+            
+            # গুগলের অডিও ডেটার প্রথম অংশ স্কিপ করে পিওর হেডারলেস স্ট্রিম ESP32-তে রিটার্ন
+            return send_file(io.BytesIO(audio_res.content[1200:]), mimetype="application/octet-stream")
+            
         return jsonify({"status": "Success", "reply": ai_reply}), 200
     except Exception as e:
-        return jsonify({"status": "Hub Error", "error": str(e)}), 500
+        return jsonify({"status": "Error", "msg": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
