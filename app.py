@@ -13,15 +13,13 @@ app = Flask(__name__)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# Global Stream Engine States
+# Global System Stream States
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 650  # আপনার রুমের ফ্যানের নয়েজ অনুযায়ী টিউন করা
-SILENCE_DURATION_CHUNKS = 12  # প্রায় ১.৫ সেকেন্ড নীরবতা থাকলে রেকর্ডিং লক হবে
+SILENCE_THRESHOLD = 650  
+SILENCE_DURATION_CHUNKS = 12  
 silent_chunks_count = 0
 has_speech_started = False
 last_recorded_wav = None
-
-# UI নোটিফিকেশন স্প্যাম প্রোটেকশন ট্র্যাকার
 ui_notification_sent = False
 
 chat_history = []
@@ -133,7 +131,7 @@ DASHBOARD_TEMPLATE = """
             <div class="relay-card OFF"><span>Loading Sync...</span></div>
         </div>
         <div class="audio-monitor-card">
-            <span><i class="fas fa-headphones-simple"></i> Live Audio Track Monitor:</span>
+            <span><i class="fas fa-headphones-simple"></i> Live Voice Input Track:</span>
             <audio id="audio-player" controls src="/get-voice-track"></audio>
         </div>
         <div class="chat-card">
@@ -167,7 +165,6 @@ DASHBOARD_TEMPLATE = """
                         const state = data[dev.id] || "OFF";
                         let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
                         
-                        // ফিক্সড লেআউট: টেক্সট গায়ে গায়ে লেগে যাওয়া বাগ দূর করা হলো
                         grid.innerHTML += '<div class="relay-card ' + state + '">' +
                             '<i class="fas ' + dev.icon + ' ' + spinClass + '"></i>' +
                             '<span>' + dev.name + '</span>' +
@@ -184,7 +181,7 @@ DASHBOARD_TEMPLATE = """
                     badge.classList.remove('online', 'streaming');
                     if(data.state === "Streaming") {
                         badge.classList.add('streaming');
-                        text.innerText = "Streaming Audio Input...";
+                        text.innerText = "Voice Transmit Active...";
                     } else if(data.state === "Online") {
                         badge.classList.add('online');
                         text.innerText = "HomeX Connected to Internet";
@@ -195,7 +192,7 @@ DASHBOARD_TEMPLATE = """
                     if (data.new_messages && data.new_messages.length > 0) {
                         data.new_messages.forEach(function(msg) {
                             if(msg.type === 'voice_start') {
-                                chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Streaming Audio active...</div>';
+                                chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
                             } else {
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
@@ -244,13 +241,13 @@ def home():
 def get_voice_track():
     global last_recorded_wav
     if last_recorded_wav is None:
-        return jsonify({"error": "No track"}), 404
+        return jsonify({"error": "No track yet"}), 404
     return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
-    if time.time() - last_esp32_seen > 6.0:
+    if time.time() - last_esp32_seen > 5.0:
         esp32_current_state = "Disconnected"
     return jsonify({"state": esp32_current_state, "new_messages": ui_pending_messages or []})
 
@@ -260,7 +257,7 @@ def esp32_ping():
     last_esp32_seen = time.time()
     if esp32_current_state != "Streaming":
         esp32_current_state = "Online"
-    return jsonify({"status": "alive"}), 200
+    return jsonify({"status": "acknowledged"}), 200
 
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
@@ -272,19 +269,15 @@ def handle_command():
         esp32_current_state = "Streaming"
         chunk_bytes = request.get_data()
         
-        # ইউজার বাটন ছেড়ে দিলে ইএসপি৩২ যখন ০ সাইজের প্যাকেট পাঠাবে তখন লক খোলা হবে
+        # ইউজার সশরীরে বাটন ছেড়ে দিলে ০ সাইজের এন্ড প্যাকেট আসবে
         if len(chunk_bytes) == 0:
             if len(audio_buffer) >= 15000:
                 full_audio = bytes(audio_buffer)
-                
-                # স্টেট এবং ট্র্যাকার রিসেট
                 audio_buffer = bytearray()
                 silent_chunks_count = 0
                 has_speech_started = False
                 ui_notification_sent = False
                 esp32_current_state = "Online"
-                
-                # ক্রcritical ফিক্সড রিটার্ন চেইন সচল করা হলো
                 return transcribe_and_process(full_audio)
             else:
                 audio_buffer = bytearray()
@@ -293,7 +286,7 @@ def handle_command():
                 esp32_current_state = "Online"
                 return jsonify({"status": "Ignored", "reason": "Too short"}), 200
         
-        # লাইভ চঙ্ক বাফারিং লুপ
+        # লাইভ চঙ্ক ইনকামিং বাফারিং
         if len(chunk_bytes) > 0:
             audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
             amplitude = np.max(np.abs(audio_data)) if len(audio_data) > 0 else 0
@@ -311,7 +304,7 @@ def handle_command():
                     audio_buffer.extend(chunk_bytes)
                     silent_chunks_count += 1
             
-            # বাটন টিপে ধরে রাখা অবস্থায় আপনি কথা শেষ করে চুপ থাকলেও যেন অটোমেটিক লক খুলে
+            # বাটন টিপে ধরে রেখে কথা শেষ করে ১.৫ সেকেন্ড চুপ থাকলেও সেফগার্ড অটো-লক
             if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
                 full_audio = bytes(audio_buffer)
                 audio_buffer = bytearray()
@@ -319,7 +312,6 @@ def handle_command():
                 has_speech_started = False
                 ui_notification_sent = False  
                 esp32_current_state = "Online"
-                
                 return transcribe_and_process(full_audio)
                     
         return jsonify({"status": "Streaming", "speech": has_speech_started}), 200
@@ -365,9 +357,8 @@ def transcribe_and_process(audio_bytes):
         
         if not user_text or len(user_text) < 2:
             esp32_current_state = "Online"
-            return jsonify({"status": "Ignored", "reason": "Empty text"}), 200
+            return jsonify({"status": "Ignored", "reason": "Empty transcription"}), 200
             
-        # আলটিমেট ফিক্স: প্রসেসিং এর মান সরাসরি রিটার্ন করা হলো
         return process_with_groq(user_text, source="voice")
     except Exception as e:
         print(f"DEBUG - Whisper Error: {str(e)}")
@@ -388,7 +379,7 @@ def process_with_groq(user_message, source="manual"):
     Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
     Current States: {json.dumps(current_relays)}
     Rules: 
-    1. Extract target device and state command even if acoustic transcription has minor noise anomalies.
+    1. Extract target device and state command.
     2. Maintain all other relay assignments exactly as they are in the CURRENT RELAY STATES.
     3. Output JSON ONLY. Scheme: {{"reply": "text", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
 
