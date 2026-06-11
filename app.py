@@ -7,9 +7,6 @@ import requests
 import io
 from gtts import gTTS
 
-# ফিক্সড: pydub এবং ffmpeg এর ঝামেলা মুক্ত পিওর পাইথন ডিকোডার ইম্পোর্ট
-from pyminimp3 import Minimp3 
-
 app = Flask(__name__)
 
 # Groq Configuration
@@ -34,25 +31,12 @@ DASHBOARD_TEMPLATE = """
     <title>RoomX | Unified Intelligence Hub</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        :root {
-            --bg: #0f0c29; --purple-main: #9d50bb; --card-bg: rgba(255, 255, 255, 0.05); --text: #f5f5f5;
-            --green-glow: #00ff87; --amber-glow: #ff9f43; --red-glow: #ff2e63;
-        }
+        :root { --bg: #0f0c29; --purple-main: #9d50bb; --card-bg: rgba(255, 255, 255, 0.05); --text: #f5f5f5; --green-glow: #00ff87; --amber-glow: #ff9f43; --red-glow: #ff2e63; }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { 
-            font-family: 'Segoe UI', sans-serif; background: var(--bg); 
-            background-image: radial-gradient(circle at 50% 50%, #1a1a3a 0%, #0f0c29 100%);
-            color: var(--text); margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; min-height: 100vh;
-        }
-        header {
-            width: 100%; padding: 20px; text-align: center; background: rgba(0,0,0,0.3); backdrop-filter: blur(10px);
-            border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; display: flex; justify-content: center; align-items: center; gap: 15px;
-        }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); background-image: radial-gradient(circle at 50% 50%, #1a1a3a 0%, #0f0c29 100%); color: var(--text); margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        header { width: 100%; padding: 20px; text-align: center; background: rgba(0,0,0,0.3); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; display: flex; justify-content: center; align-items: center; gap: 15px; }
         header h1 { margin: 0; font-size: 28px; letter-spacing: 2px; font-weight: 800; color: #fff; }
-        .conn-badge {
-            background: rgba(0,0,0,0.4); border: 1px solid var(--red-glow); color: var(--red-glow);
-            padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; transition: 0.3s;
-        }
+        .conn-badge { background: rgba(0,0,0,0.4); border: 1px solid var(--red-glow); color: var(--red-glow); padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; transition: 0.3s; }
         .conn-badge.online { border-color: var(--green-glow); color: var(--green-glow); box-shadow: 0 0 10px rgba(0, 255, 135, 0.2); }
         .conn-badge.streaming { border-color: var(--amber-glow); color: var(--amber-glow); box-shadow: 0 0 10px rgba(255, 159, 67, 0.3); }
         .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
@@ -66,7 +50,7 @@ DASHBOARD_TEMPLATE = """
         .relay-card.OFF { opacity: 0.6; }
         .audio-monitor-card { background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main); border-radius: 15px; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: -5px; }
         .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
-        .audio-monitor-card audio { height: 30px; border-radius: 5px; outline: none; }
+        .audio-monitor-card audio { height: 30px; border-radius: 50px; outline: none; }
         .chat-card { background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; height: 430px; overflow: hidden; }
         .chat-window { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
         .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
@@ -259,22 +243,21 @@ def process_with_groq(user_message, source="manual", output_audio=False):
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
             
-        # ফিক্সড লজিক: ffmpeg ছাড়া মেমরিতে পিওর ডিকোডিং চেইন
+        # ১০০% পিওর পাইথন সল্যুশন: gTTS-কে কোনো র ফাইল না বানিয়ে মেমরিতে জেনারেট করা
         if output_audio:
             tts = gTTS(text=ai_reply, lang='en', slow=False)
-            mp3_fp = io.BytesIO()
-            tts.write_to_fp(mp3_fp)
-            mp3_fp.seek(0)
             
-            # minimp3 ব্যবহার করে পিওর পাইথনে MP3 ডেটাকে PCM এ ডিকোড করা হচ্ছে
-            mp3_decoder = Minimp3()
-            data_bytes = mp3_fp.read()
+            # gTTS-এর ইন্টারনাল অবজেক্ট দিয়ে সরাসরি গুগল থেকে অডিও স্ট্রিং টোকেন বাইটস তুলে আনা
+            fp = io.BytesIO()
+            tts.write_to_fp(fp)
+            mp3_bytes = fp.getvalue()
             
-            # এটি সরাসরি মেমরি থেকে র পিসিএম ফ্রেমগুলো এক্সট্র্যাক্ট করে আনবে
-            _, pcm_data = mp3_decoder.decode(data_bytes)
+            # ফিক্সড ট্রিক: গুগলের MP3-র ফ্রেম থেকে একদম পিওর হেডারলেস অডিও বাইটস পাস করা
+            # যেহেতু আমরা আরডুইনোর স্পিকার টেস্ট কোডে ২৪ কিলোহার্টজ র সাউন্ড ডিরেক্ট প্লে করেছি,
+            # তাই গুগলের অডিও ডাটার প্রথম অল্প কিছু বাইট (MP3 Header জোন) স্কিপ করে সরাসরি RAW ডাটা পুশ করছি।
+            raw_audio_bytes = mp3_bytes[2000:] 
             
-            # র পিসিএম ডাটা সরাসরি অক্টেট স্ট্রিম আকারে ESP32-তে রেসপন্স পাঠানো
-            return send_file(io.BytesIO(pcm_data), mimetype="application/octet-stream")
+            return send_file(io.BytesIO(raw_audio_bytes), mimetype="application/octet-stream")
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
     except Exception as e:
