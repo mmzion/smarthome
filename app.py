@@ -153,7 +153,6 @@ DASHBOARD_TEMPLATE = """
                 .then(res => res.json())
                 .then(data => {
                     const grid = document.getElementById('device-grid');
-                    if(!data) return;
                     grid.innerHTML = '';
                     const devices = [
                         { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
@@ -199,7 +198,7 @@ DASHBOARD_TEMPLATE = """
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
                                 
-                                // Cache busting: ইউনিক টাইমস্ট্যাম্প যোগ করা হয়েছে যাতে পূর্ণাঙ্গ ট্র্যাকটি রিলোড হয়
+                                // ফিক্সড: ক্যাশ বাস্টিং যোগ করা হলো যাতে প্লেয়ার ৪-৫ সেকেন্ডেরই নতুন পুরো ট্র্যাক লোড করে
                                 audioPlayer.src = "/get-voice-track?t=" + new Date().getTime();
                                 audioPlayer.load(); 
                             }
@@ -256,7 +255,7 @@ def get_voice_track():
     if last_recorded_wav is None:
         return jsonify({"error": "No track yet"}), 404
     
-    # ব্রাউজারকে ফাইলের সঠিক সাইজ এবং নো-ক্যাশ হেডার পাঠানো হচ্ছে
+    # ফিক্সড: ব্রাউজারকে ফাইলের সঠিক সাইজ এবং নো-ক্যাশ হেডার পাস করা হচ্ছে যেন প্লেয়ারের ডিউরেশন ড্রপ না করে
     response = make_response(send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav"))
     response.headers["Content-Length"] = len(last_recorded_wav)
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -268,8 +267,8 @@ def get_voice_track():
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
     
-    # বড় অডিও স্ট্রিম প্রসেস হতে সময় লাগার কারণে চেক ডিলে ৮ সেকেন্ড করা হলো
-    if time.time() - last_esp32_seen > 8.0:
+    # ৫ সেকেন্ডের ট্র্যাক প্রসেস হতে অতিরিক্ত সময়ের কারণে লিমিট ৭ সেকেন্ড করা হলো
+    if time.time() - last_esp32_seen > 7.0:
         esp32_current_state = "Disconnected"
         
     messages_to_send = list(ui_pending_messages)
@@ -290,17 +289,13 @@ def handle_command():
     
     last_esp32_seen = time.time()
     
-    # স্ট্যান্ডার্ড বা চাঙ্কড স্ট্রিম উভয় মেথড হ্যান্ডলিং কন্ডিশন
-    if request.headers.get('Content-Type') == 'application/octet-stream' or request.headers.get('Transfer-Encoding') == 'chunked':
+    if request.headers.get('Content-Type') == 'application/octet-stream':
         esp32_current_state = "Streaming"
         ui_pending_messages.append({"type": "voice_start"})
         
-        # লাইভ ইনপুট স্ট্রিম থেকে সম্পূর্ণ ডাটা একসাথে রিড করা হচ্ছে
         audio_bytes = request.get_data()
         
-        print(f"[RoomX Log] Buffer Received. Total Bytes: {len(audio_bytes)}")
-        
-        if len(audio_bytes) < 4000:
+        if len(audio_bytes) < 2000:
             esp32_current_state = "Online"
             return jsonify({"error": "Audio track too short"}), 400
             
@@ -308,7 +303,6 @@ def handle_command():
         esp32_current_state = "Online"
         return response
     else:
-        # ম্যানুয়াল চ্যাট ইনপুট প্রসেস
         data = request.get_json() or {}
         command_text = data.get("text", "").strip()
         if command_text:
@@ -351,12 +345,12 @@ def transcribe_and_process(audio_bytes):
             
         return process_with_groq(user_text, source="voice")
     except Exception as e:
-        print(f"[RoomX Error] Transcription failed: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 def process_with_groq(user_message, source="manual"):
     global chat_history, ui_pending_messages
     
+    clean_message = user_message.strip().replace(".", "").replace(",", "")
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
         res = requests.get(FIREBASE_URL, timeout=1.5)
@@ -400,4 +394,4 @@ def process_with_groq(user_message, source="manual"):
         return jsonify({"status": "JSON Parse Error"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
