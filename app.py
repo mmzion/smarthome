@@ -3,7 +3,7 @@ import json
 import base64
 import time
 import numpy as np
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
 import io
@@ -16,10 +16,13 @@ FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
 # Global Hardware & Stream States
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 700  # Optimized to filter out background room noise
+SILENCE_THRESHOLD = 700  
 SILENCE_DURATION_CHUNKS = 12  
 silent_chunks_count = 0
 has_speech_started = False
+
+# Global Storage for Web Audio Player Monitoring
+last_recorded_wav = None
 
 # Chat History & Connection Tracking
 chat_history = []
@@ -33,7 +36,7 @@ DASHBOARD_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RoomX | Unified Intelligence Hub</title>
+    <title>RoomX | Advanced Intelligence Hub</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
@@ -71,10 +74,8 @@ DASHBOARD_TEMPLATE = """
             border-color: var(--green-glow); color: var(--green-glow);
             box-shadow: 0 0 10px rgba(0, 255, 135, 0.2);
         }
-        .conn-badge i { font-size: 10px; }
 
         .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
-
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
         .relay-card { 
             background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; 
@@ -90,13 +91,20 @@ DASHBOARD_TEMPLATE = """
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
 
+        /* Audio Monitor Dashboard Widget */
+        .audio-monitor-card {
+            background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main);
+            border-radius: 15px; padding: 12px 20px; display: flex; align-items: center;
+            justify-content: space-between; gap: 15px; margin-bottom: -5px;
+        }
+        .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
+        .audio-monitor-card audio { height: 30px; border-radius: 5px; outline: none; }
+
         .chat-card {
             background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1);
-            display: flex; flex-direction: column; height: 450px; overflow: hidden;
+            display: flex; flex-direction: column; height: 430px; overflow: hidden;
         }
-        .chat-window {
-            flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
-        }
+        .chat-window { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
         .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
         .user-msg { align-self: flex-end; background: var(--purple-main); color: white; border-bottom-right-radius: 4px; }
         .ai-msg { align-self: flex-start; background: rgba(255,255,255,0.1); color: #eee; border-bottom-left-radius: 4px; }
@@ -118,6 +126,7 @@ DASHBOARD_TEMPLATE = """
         @media (max-width: 600px) {
             header { flex-direction: column; gap: 8px; }
             .grid { grid-template-columns: repeat(2, 1fr); }
+            .audio-monitor-card { flex-direction: column; text-align: center; }
         }
     </style>
 </head>
@@ -134,6 +143,11 @@ DASHBOARD_TEMPLATE = """
             <div class="relay-card OFF"><span>Loading Sync...</span></div>
         </div>
 
+        <div class="audio-monitor-card">
+            <span><i class="fas fa-headphones-simple"></i> Listen Live Microphone Audio:</span>
+            <audio id="audio-player" controls src="/get-voice-track"></audio>
+        </div>
+
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
                 <div class="msg ai-msg">Welcome back Zion! RoomX Unified Hub is online. Send a text or use your ESP32 Voice mic.</div>
@@ -147,6 +161,7 @@ DASHBOARD_TEMPLATE = """
 
     <script>
         const chatWindow = document.getElementById('chat-window');
+        const audioPlayer = document.getElementById('audio-player');
         let isSending = false;
 
         function updateHub() {
@@ -192,6 +207,8 @@ DASHBOARD_TEMPLATE = """
                             } else {
                                 chatWindow.innerHTML += `<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>\${msg.user}</div>`;
                                 chatWindow.innerHTML += `<div class="msg ai-msg">\${msg.ai}</div>`;
+                                // অডিও প্লেয়ার রিলোড করা যাতে নতুন ট্র্যাক প্লে হয়
+                                audioPlayer.load();
                             }
                         });
                         chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -218,17 +235,26 @@ DASHBOARD_TEMPLATE = """
             .then(data => {
                 chatWindow.innerHTML += `<div class="msg ai-msg">${data.reply}</div>`;
                 chatWindow.scrollTop = chatWindow.scrollHeight;
-                input.value = ''; input.disabled = false; btn.disabled = false; isSending = false;
+                
+                // ফিক্সড: ইনপুট এরিয়া ফোকাস ধরে রাখার কোড
+                input.value = ''; 
+                input.disabled = false; 
+                btn.disabled = false; 
+                isSending = false;
+                input.focus(); // স্বয়ংক্রিয়ভাবে কার্সার বক্সে ব্যাক করবে
                 updateHub();
             })
             .catch(() => {
                 input.disabled = false; btn.disabled = false; isSending = false;
+                input.focus();
             });
         }
 
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
         setInterval(updateHub, 1500);
         updateHub();
+        // শুরুতে চ্যাট বক্স ফোকাস করা
+        document.getElementById('chat-msg').focus();
     </script>
 </body>
 </html>
@@ -237,6 +263,13 @@ DASHBOARD_TEMPLATE = """
 @app.route('/', methods=['GET'])
 def home():
     return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL), 200
+
+@app.route('/get-voice-track', methods=['GET'])
+def get_voice_track():
+    global last_recorded_wav
+    if last_recorded_wav is None:
+        return jsonify({"error": "No track recorded yet"}), 404
+    return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
@@ -295,6 +328,7 @@ def handle_command():
     return jsonify({"error": "No input"}), 400
 
 def transcribe_and_process(audio_bytes):
+    global last_recorded_wav
     try:
         duration = len(audio_bytes)
         header = bytearray(44)
@@ -312,7 +346,10 @@ def transcribe_and_process(audio_bytes):
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
         
-        wav_io = io.BytesIO(header + audio_bytes)
+        # অডিও প্লেয়ারের জন্য গ্লোবাল ভেরিয়েবলে পূর্ণাঙ্গ WAV ডেটা সেভ করা
+        last_recorded_wav = header + audio_bytes
+        
+        wav_io = io.BytesIO(last_recorded_wav)
         wav_io.name = "audio.wav"
 
         transcription = groq_client.audio.transcriptions.create(
@@ -335,13 +372,17 @@ def transcribe_and_process(audio_bytes):
 def process_with_groq(user_message, source="manual"):
     global chat_history, ui_pending_messages
     
+    clean_message = user_message.strip().replace(".", "").replace(",", "")
+    if not clean_message or len(clean_message) < 3:
+        return jsonify({"status": "Ignored", "reason": "Noise input"}), 200
+
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
         res = requests.get(FIREBASE_URL, timeout=1.5)
         if res.status_code == 200 and res.json(): current_relays = res.json()
     except: pass
 
-    system_instruction = f"""You are RoomX AI, an elite smart home operating system designed by Zion. 
+    system_instruction = f"""You are RoomX AI, an elite smart home operating system. 
     
     Hardware Mapping Layout:
     - relay_1: Main Light
@@ -353,10 +394,9 @@ def process_with_groq(user_message, source="manual"):
     {json.dumps(current_relays)}
 
     Strict Rules:
-    1. Look closely at the user text input. If it contains background noise interpretations or tiny grammatical flaws from audio conversions, extract the main target device ('light', 'fan', 'socket') and state command ('on', 'off').
-    2. Maintain all other relay assignments exactly as they are in the CURRENT RELAY STATES unless specified otherwise. Do not blindly shut down active appliances.
-    3. Output JSON ONLY. Do not wrap inside code block ticks. Use this exact schema:
-    {{"reply": "your text response here", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
+    1. Extract target device ('light', 'fan', 'socket') and state ('on', 'off') even if audio transcription has minor flaws.
+    2. Maintain all other relay assignments exactly as they are in the CURRENT RELAY STATES.
+    3. Output JSON ONLY. Scheme: {{"reply": "text", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
 
     messages = [{"role": "system", "content": system_instruction}]
     for h in chat_history:
