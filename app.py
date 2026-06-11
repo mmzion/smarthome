@@ -5,7 +5,6 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
 import io
-from gtts import gTTS
 
 app = Flask(__name__)
 
@@ -21,7 +20,6 @@ last_esp32_seen = 0
 esp32_current_state = "Disconnected" 
 ui_pending_messages = []
 
-# (ড্যাশবোর্ড টেমপ্লেট আগের মতোই হুবহু অপরিবর্তিত থাকবে)
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -31,87 +29,243 @@ DASHBOARD_TEMPLATE = """
     <title>RoomX | Unified Intelligence Hub</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        :root { --bg: #0f0c29; --purple-main: #9d50bb; --card-bg: rgba(255, 255, 255, 0.05); --text: #f5f5f5; --green-glow: #00ff87; --amber-glow: #ff9f43; --red-glow: #ff2e63; }
+        :root {
+            --bg: #0f0c29;
+            --purple-main: #9d50bb;
+            --card-bg: rgba(255, 255, 255, 0.05);
+            --text: #f5f5f5;
+            --green-glow: #00ff87;
+            --amber-glow: #ff9f43;
+            --red-glow: #ff2e63;
+        }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); background-image: radial-gradient(circle at 50% 50%, #1a1a3a 0%, #0f0c29 100%); color: var(--text); margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
-        header { width: 100%; padding: 20px; text-align: center; background: rgba(0,0,0,0.3); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; display: flex; justify-content: center; align-items: center; gap: 15px; }
+        body { 
+            font-family: 'Segoe UI', sans-serif; 
+            background: var(--bg); 
+            background-image: radial-gradient(circle at 50% 50%, #1a1a3a 0%, #0f0c29 100%);
+            color: var(--text); margin: 0; padding: 0;
+            display: flex; flex-direction: column; align-items: center; min-height: 100vh;
+        }
+        header {
+            width: 100%; padding: 20px; text-align: center;
+            background: rgba(0,0,0,0.3); backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px;
+            display: flex; justify-content: center; align-items: center; gap: 15px;
+        }
         header h1 { margin: 0; font-size: 28px; letter-spacing: 2px; font-weight: 800; color: #fff; }
-        .conn-badge { background: rgba(0,0,0,0.4); border: 1px solid var(--red-glow); color: var(--red-glow); padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; transition: 0.3s; }
-        .conn-badge.online { border-color: var(--green-glow); color: var(--green-glow); box-shadow: 0 0 10px rgba(0, 255, 135, 0.2); }
-        .conn-badge.streaming { border-color: var(--amber-glow); color: var(--amber-glow); box-shadow: 0 0 10px rgba(255, 159, 67, 0.3); }
+        .conn-badge {
+            background: rgba(0,0,0,0.4); border: 1px solid var(--red-glow); color: var(--red-glow);
+            padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600;
+            display: flex; align-items: center; gap: 8px; transition: 0.3s;
+        }
+        .conn-badge.online {
+            border-color: var(--green-glow); color: var(--green-glow);
+            box-shadow: 0 0 10px rgba(0, 255, 135, 0.2);
+        }
+        .conn-badge.streaming {
+            border-color: var(--amber-glow); color: var(--amber-glow);
+            box-shadow: 0 0 10px rgba(255, 159, 67, 0.3);
+        }
         .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
-        .relay-card { background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 20px; text-align: center; transition: all 0.3s ease; }
+        .relay-card { 
+            background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; 
+            padding: 20px; text-align: center; transition: all 0.3s ease;
+        }
         .relay-card i { font-size: 30px; margin-bottom: 10px; display: block; }
         .relay-card span { font-size: 14px; font-weight: 600; opacity: 0.8; }
         .relay-card .status { font-size: 11px; margin-top: 5px; display: block; letter-spacing: 1px; }
-        .relay-card.ON { background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main); box-shadow: 0 0 15px rgba(157, 80, 187, 0.3); }
+        .relay-card.ON { 
+            background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main);
+            box-shadow: 0 0 15px rgba(157, 80, 187, 0.3);
+        }
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
-        .audio-monitor-card { background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main); border-radius: 15px; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: -5px; }
+        
+        /* নতুন ভয়েস অপশন প্যানেল স্টাইল */
+        .audio-monitor-card {
+            background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main);
+            border-radius: 15px; padding: 12px 20px; display: flex; align-items: center;
+            justify-content: space-between; gap: 15px; margin-bottom: -5px;
+        }
         .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
-        .audio-monitor-card audio { height: 30px; border-radius: 50px; outline: none; }
-        .chat-card { background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; height: 430px; overflow: hidden; }
+        .voice-settings { display: flex; align-items: center; gap: 10px; }
+        .btn-voice { background: #ff9f43; color: #000; border: none; padding: 5px 12px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 11px; }
+        .btn-voice.off { background: rgba(255,255,255,0.2); color: #fff; }
+
+        .chat-card {
+            background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1);
+            display: flex; flex-direction: column; height: 430px; overflow: hidden;
+        }
         .chat-window { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
         .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
         .user-msg { align-self: flex-end; background: var(--purple-main); color: white; border-bottom-right-radius: 4px; }
         .ai-msg { align-self: flex-start; background: rgba(255,255,255,0.1); color: #eee; border-bottom-left-radius: 4px; }
         .system-msg { align-self: center; background: rgba(255, 159, 67, 0.1); color: #ff9f43; border: 1px dashed #ff9f43; font-size: 12px; border-radius: 10px; }
         .input-area { padding: 15px; background: rgba(0,0,0,0.2); display: flex; gap: 10px; }
-        .input-area input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 50px; padding: 12px 20px; color: white; outline: none; font-size: 15px; }
+        .input-area input {
+            flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 50px; padding: 12px 20px; color: white; outline: none; font-size: 15px;
+        }
         .input-area input:focus { border-color: var(--purple-main); }
-        .input-area button { background: var(--purple-main); color: white; border: none; width: 45px; height: 45px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.3s; }
+        .input-area button {
+            background: var(--purple-main); color: white; border: none;
+            width: 45px; height: 45px; border-radius: 50%; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; transition: 0.3s;
+        }
         .input-area button:hover { transform: scale(1.1); }
-        @media (max-width: 600px) { header { flex-direction: column; gap: 8px; } .grid { grid-template-columns: repeat(2, 1fr); } .audio-monitor-card { flex-direction: column; text-align: center; } }
     </style>
 </head>
 <body>
-    <header><h1>RoomX</h1><div id="conn-status" class="conn-badge"><i class="fas fa-circle"></i> <span id="conn-text">HomeX Disconnected</span></div></header>
+    <header>
+        <h1>RoomX</h1>
+        <div id="conn-status" class="conn-badge">
+            <i class="fas fa-circle"></i> <span id="conn-text">HomeX Disconnected</span>
+        </div>
+    </header>
     <div class="container">
-        <div id="device-grid" class="grid"><div class="relay-card OFF"><span>Loading Sync...</span></div></div>
-        <div class="audio-monitor-card"><span><i class="fas fa-headphones-simple"></i> Live Voice Input Track:</span><audio id="audio-player" controls src="/get-voice-track"></audio></div>
+        <div id="device-grid" class="grid">
+            <div class="relay-card OFF"><span>Loading Sync...</span></div>
+        </div>
+        
+        <div class="audio-monitor-card">
+            <span><i class="fas fa-volume-high"></i> Dashboard AI Voice Agent Speaker:</span>
+            <div class="voice-settings">
+                <button id="voice-toggle" class="btn-voice" onclick="toggleVoice()">🔊 Voice Output: ON</button>
+            </div>
+        </div>
+
         <div class="chat-card">
-            <div class="chat-window" id="chat-window"><div class="msg ai-msg">Welcome back Zion! Unified Hub Status System is fully sync'd.</div></div>
-            <div class="input-area"><input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)"><button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button></div>
+            <div class="chat-window" id="chat-window">
+                <div class="msg ai-msg">Welcome back Zion! Unified Hub Status System is fully sync'd.</div>
+            </div>
+            <div class="input-area">
+                <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
+                <button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button>
+            </div>
         </div>
     </div>
     <script>
-        const chatWindow = document.getElementById('chat-window'); const audioPlayer = document.getElementById('audio-player'); let isSending = false;
+        const chatWindow = document.getElementById('chat-window');
+        let isSending = false;
+        let voiceOutputEnabled = true; // ভয়েস আউটপুট ডিফল্ট অন থাকবে
+
+        function toggleVoice() {
+            const btn = document.getElementById('voice-toggle');
+            voiceOutputEnabled = !voiceOutputEnabled;
+            if(voiceOutputEnabled) {
+                btn.innerText = "🔊 Voice Output: ON";
+                btn.classList.remove('off');
+            } else {
+                btn.innerText = "🔇 Voice Output: OFF";
+                btn.classList.add('off');
+            }
+        }
+
+        // ব্রাউজার স্পিকার দিয়ে কথা বলানোর মূল লজিক (TTS)
+        void function speakText(text) {
+            if (!voiceOutputEnabled) return;
+            window.speechSynthesis.cancel(); // আগের কোনো কথা মাঝপথে থাকলে তা কেটে নতুনটা শুরু করবে
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-US';
+            utterance.rate = 1.0; 
+            window.speechSynthesis.speak(utterance);
+        }
+
         function updateHub() {
-            fetch('{{ fb_url }}').then(res => res.json()).then(data => {
-                const grid = document.getElementById('device-grid'); grid.innerHTML = '';
-                const devices = [{ id: "relay_1", name: "Main Light", icon: "fa-lightbulb" }, { id: "relay_2", name: "Dim Light", icon: "fa-moon" }, { id: "relay_3", name: "Fan", icon: "fa-fan" }, { id: "relay_4", name: "Socket", icon: "fa-plug" }];
-                devices.forEach(function(dev) {
-                    const state = data[dev.id] || "OFF"; let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
-                    grid.innerHTML += '<div class="relay-card ' + state + '"><i class="fas ' + dev.icon + ' ' + spinClass + '"></i><span>' + dev.name + '</span><span class="status">' + state + '</span></div>';
-                });
-            });
-            fetch('/get-latest-events').then(res => res.json()).then(data => {
-                const badge = document.getElementById('conn-status'); const text = document.getElementById('conn-text');
-                badge.classList.remove('online', 'streaming');
-                if(data.state === "Streaming") { badge.classList.add('streaming'); text.innerText = "Voice Transmit Active..."; }
-                else if(data.state === "Online") { badge.classList.add('online'); text.innerText = "HomeX Connected to Internet"; }
-                else { text.innerText = "HomeX Disconnected"; }
-                if (data.new_messages && data.new_messages.length > 0) {
-                    data.new_messages.forEach(function(msg) {
-                        if(msg.type === 'voice_start') { chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>'; }
-                        else { chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div><div class="msg ai-msg">' + msg.ai + '</div>'; audioPlayer.load(); }
+            fetch('{{ fb_url }}')
+                .then(res => res.json())
+                .then(data => {
+                    const grid = document.getElementById('device-grid');
+                    grid.innerHTML = '';
+                    const devices = [
+                        { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
+                        { id: "relay_2", name: "Dim Light", icon: "fa-moon" },
+                        { id: "relay_3", name: "Fan", icon: "fa-fan" },
+                        { id: "relay_4", name: "Socket", icon: "fa-plug" }
+                    ];
+                    
+                    devices.forEach(function(dev) {
+                        const state = data[dev.id] || "OFF";
+                        let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
+                        grid.innerHTML += '<div class="relay-card ' + state + '">' +
+                            '<i class="fas ' + dev.icon + ' ' + spinClass + '"></i>' +
+                            '<span>' + dev.name + '</span>' +
+                            '<span class="status">' + state + '</span>' +
+                            '</div>';
                     });
-                    chatWindow.scrollTop = chatWindow.scrollHeight;
-                }
+                });
+
+            fetch('/get-latest-events')
+                .then(res => res.json())
+                .then(data => {
+                    const badge = document.getElementById('conn-status');
+                    const text = document.getElementById('conn-text');
+                    
+                    badge.classList.remove('online', 'streaming');
+                    if(data.state === "Streaming") {
+                        badge.classList.add('streaming');
+                        text.innerText = "Voice Transmit Active...";
+                    } else if(data.state === "Online") {
+                        badge.classList.add('online');
+                        text.innerText = "HomeX Connected to Internet";
+                    } else {
+                        text.innerText = "HomeX Disconnected";
+                    }
+
+                    if (data.new_messages && data.new_messages.length > 0) {
+                        data.new_messages.forEach(function(msg) {
+                            if(msg.type === 'voice_start') {
+                                chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
+                            } else {
+                                chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
+                                chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
+                                
+                                // ফিক্সড: টাইপড বা ভয়েস যেকোনো কম্যান্ডেরই এআই রেসপন্সটি লাইভ ড্যাশবোর্ড স্পীকারে বাজবে!
+                                speakText(msg.ai);
+                            }
+                        });
+                        chatWindow.scrollTop = chatWindow.scrollHeight;
+                    }
+                });
+        }
+
+        function sendManualCommand() {
+            const input = document.getElementById('chat-msg');
+            const btn = document.getElementById('send-btn');
+            const cmd = input.value.trim();
+            if(!cmd || isSending) return;
+
+            isSending = true; input.disabled = true; btn.disabled = true;
+            chatWindow.innerHTML += '<div class="msg user-msg">' + cmd + '</div>';
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+
+            fetch('/voice-command', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ text: cmd })
+            })
+            .then(res => res.json())
+            .then(data => {
+                chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>';
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+                
+                // ম্যানুয়াল কম্যান্ডের উত্তরও ড্যাশবোর্ডে প্লে হবে
+                speakText(data.reply);
+                
+                input.value = ''; input.disabled = false; btn.disabled = false; isSending = false;
+                input.focus(); 
+                updateHub();
+            })
+            .catch(() => {
+                input.disabled = false; btn.disabled = false; isSending = false; input.focus();
             });
         }
-        function sendManualCommand() {
-            const input = document.getElementById('chat-msg'); const btn = document.getElementById('send-btn'); const cmd = input.value.trim(); if(!cmd || isSending) return;
-            isSending = true; input.disabled = true; btn.disabled = true; chatWindow.innerHTML += '<div class="msg user-msg">' + cmd + '</div>'; chatWindow.scrollTop = chatWindow.scrollHeight;
-            fetch('/voice-command', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ text: cmd }) })
-            .then(res => res.json()).then(data => {
-                chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>'; chatWindow.scrollTop = chatWindow.scrollHeight;
-                input.value = ''; input.disabled = false; btn.disabled = false; isSending = false; input.focus(); updateHub();
-            }).catch(() => { input.disabled = false; btn.disabled = false; isSending = false; input.focus(); });
-        }
+        
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateHub, 1000); updateHub(); document.getElementById('chat-msg').focus();
+        setInterval(updateHub, 1000); 
+        updateHub();
+        document.getElementById('chat-msg').focus();
     </script>
 </body>
 </html>
@@ -120,13 +274,6 @@ DASHBOARD_TEMPLATE = """
 @app.route('/', methods=['GET'])
 def home():
     return render_template_string(DASHBOARD_TEMPLATE, fb_url=FIREBASE_URL), 200
-
-@app.route('/get-voice-track', methods=['GET'])
-def get_voice_track():
-    global last_recorded_wav
-    if last_recorded_wav is None:
-        return jsonify({"error": "No track yet"}), 404
-    return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
@@ -159,7 +306,7 @@ def handle_command():
             esp32_current_state = "Online"
             return jsonify({"error": "Audio track too short"}), 400
             
-        return transcribe_and_process(audio_bytes, output_audio=True)
+        return transcribe_and_process(audio_bytes)
     else:
         data = request.get_json() or {}
         command_text = data.get("text", "").strip()
@@ -168,7 +315,7 @@ def handle_command():
             
     return jsonify({"error": "Invalid request"}), 400
 
-def transcribe_and_process(audio_bytes, output_audio=False):
+def transcribe_and_process(audio_bytes):
     global last_recorded_wav
     try:
         duration = len(audio_bytes)
@@ -200,11 +347,11 @@ def transcribe_and_process(audio_bytes, output_audio=False):
         if not user_text or len(user_text) < 2:
             return jsonify({"status": "Ignored", "reason": "Empty transcription"}), 200
             
-        return process_with_groq(user_text, source="voice", output_audio=output_audio)
+        return process_with_groq(user_text, source="voice")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-def process_with_groq(user_message, source="manual", output_audio=False):
+def process_with_groq(user_message, source="manual"):
     global chat_history, ui_pending_messages
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
@@ -242,22 +389,6 @@ def process_with_groq(user_message, source="manual", output_audio=False):
         
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
-            
-        # ১০০% পিওর পাইথন সল্যুশন: gTTS-কে কোনো র ফাইল না বানিয়ে মেমরিতে জেনারেট করা
-        if output_audio:
-            tts = gTTS(text=ai_reply, lang='en', slow=False)
-            
-            # gTTS-এর ইন্টারনাল অবজেক্ট দিয়ে সরাসরি গুগল থেকে অডিও স্ট্রিং টোকেন বাইটস তুলে আনা
-            fp = io.BytesIO()
-            tts.write_to_fp(fp)
-            mp3_bytes = fp.getvalue()
-            
-            # ফিক্সড ট্রিক: গুগলের MP3-র ফ্রেম থেকে একদম পিওর হেডারলেস অডিও বাইটস পাস করা
-            # যেহেতু আমরা আরডুইনোর স্পিকার টেস্ট কোডে ২৪ কিলোহার্টজ র সাউন্ড ডিরেক্ট প্লে করেছি,
-            # তাই গুগলের অডিও ডাটার প্রথম অল্প কিছু বাইট (MP3 Header জোন) স্কিপ করে সরাসরি RAW ডাটা পুশ করছি।
-            raw_audio_bytes = mp3_bytes[2000:] 
-            
-            return send_file(io.BytesIO(raw_audio_bytes), mimetype="application/octet-stream")
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
     except Exception as e:
