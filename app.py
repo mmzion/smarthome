@@ -199,7 +199,7 @@ DASHBOARD_TEMPLATE = """
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
                                 
-                                // ফিক্সড: ক্যাশ বাস্টিং টাইমস্ট্যাম্প যোগ করা হয়েছে যেন ব্রাউজার ৪-৫ সেকেন্ডেরই নতুন ট্র্যাক লোড করে
+                                // Cache busting: ইউনিক টাইমস্ট্যাম্প যোগ করা হয়েছে যাতে পূর্ণাঙ্গ ট্র্যাকটি রিলোড হয়
                                 audioPlayer.src = "/get-voice-track?t=" + new Date().getTime();
                                 audioPlayer.load(); 
                             }
@@ -256,7 +256,7 @@ def get_voice_track():
     if last_recorded_wav is None:
         return jsonify({"error": "No track yet"}), 404
     
-    # ফিক্সড: ব্রাউজারকে ফাইলের সঠিক সাইজ ও নো-ক্যাশ হেডার পাস করা হচ্ছে যেন অডিও টাইম ডিউরেশন (যেমন 0:05) সঠিকভাবে আসে
+    # ব্রাউজারকে ফাইলের সঠিক সাইজ এবং নো-ক্যাশ হেডার পাঠানো হচ্ছে
     response = make_response(send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav"))
     response.headers["Content-Length"] = len(last_recorded_wav)
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -268,8 +268,8 @@ def get_voice_track():
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
     
-    # বড় অডিও ফাইল স্ট্রিম হতে সময় লাগার কারণে ডিলে ৭ সেকেন্ড করা হলো
-    if time.time() - last_esp32_seen > 7.0: 
+    # বড় অডিও স্ট্রিম প্রসেস হতে সময় লাগার কারণে চেক ডিলে ৮ সেকেন্ড করা হলো
+    if time.time() - last_esp32_seen > 8.0:
         esp32_current_state = "Disconnected"
         
     messages_to_send = list(ui_pending_messages)
@@ -284,26 +284,25 @@ def esp32_ping():
         esp32_current_state = "Online"
     return jsonify({"status": "acknowledged"}), 200
 
-# ফিক্সড: চাঙ্কড স্ট্রিম এবং সাধারণ রিকোয়েস্ট দুটিই একসাথে রিসিভ করার লজিক
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
     global last_esp32_seen, ui_pending_messages, esp32_current_state
     
     last_esp32_seen = time.time()
     
-    # নতুন I2S লাইভ চাঙ্কড স্ট্রিম ডিটেকশন কন্ডিশন
+    # স্ট্যান্ডার্ড বা চাঙ্কড স্ট্রিম উভয় মেথড হ্যান্ডলিং কন্ডিশন
     if request.headers.get('Content-Type') == 'application/octet-stream' or request.headers.get('Transfer-Encoding') == 'chunked':
         esp32_current_state = "Streaming"
         ui_pending_messages.append({"type": "voice_start"})
         
-        # WSGI ইনপুট স্ট্রিম থেকে পুরো লাইভ ডাটা রিড করা হচ্ছে
-        audio_bytes = request.get_data() 
+        # লাইভ ইনপুট স্ট্রিম থেকে সম্পূর্ণ ডাটা একসাথে রিড করা হচ্ছে
+        audio_bytes = request.get_data()
         
-        print(f"[RoomX Log] Stream Received. Total Buffer Size: {len(audio_bytes)} bytes")
+        print(f"[RoomX Log] Buffer Received. Total Bytes: {len(audio_bytes)}")
         
-        if len(audio_bytes) < 4000: # খুব ছোট বাফার ড্রপ করার জন্য চেক
+        if len(audio_bytes) < 4000:
             esp32_current_state = "Online"
-            return jsonify({"error": "Audio track too short or empty"}), 400
+            return jsonify({"error": "Audio track too short"}), 400
             
         response = transcribe_and_process(audio_bytes)
         esp32_current_state = "Online"
@@ -336,7 +335,6 @@ def transcribe_and_process(audio_bytes):
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
         
-        # পারফেক্ট হেডার ফাইল জেনারেট হচ্ছে
         last_recorded_wav = header + audio_bytes
         wav_io = io.BytesIO(last_recorded_wav)
         wav_io.name = "audio.wav"
@@ -402,5 +400,4 @@ def process_with_groq(user_message, source="manual"):
         return jsonify({"status": "JSON Parse Error"}), 500
 
 if __name__ == '__main__':
-    # debug=True রাখা হয়েছে যাতে কোনো ইন্টারনাল এরর কনসোলে সরাসরি দেখা যায়
     app.run(host='0.0.0.0', port=5000, debug=True)
