@@ -9,19 +9,16 @@ import io
 
 app = Flask(__name__)
 
-# Groq Configuration
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# Global Stream Engine States
+# Global Stream States
 audio_buffer = bytearray()
-SILENCE_THRESHOLD = 650  # আপনার রুমের ফ্যানের নয়েজ অনুযায়ী টিউন করা
-SILENCE_DURATION_CHUNKS = 12  # প্রায় ১.৫ সেকেন্ড নীরবতা থাকলে রেকর্ডিং লক হবে
+SILENCE_THRESHOLD = 650  
+SILENCE_DURATION_CHUNKS = 12  
 silent_chunks_count = 0
 has_speech_started = False
 last_recorded_wav = None
-
-# UI নোটিফিকেশন স্প্যাম প্রোটেকশন ট্র্যাকার
 ui_notification_sent = False
 
 chat_history = []
@@ -72,53 +69,23 @@ DASHBOARD_TEMPLATE = """
         .conn-badge.streaming { border-color: var(--amber-glow); color: var(--amber-glow); box-shadow: 0 0 10px rgba(255, 159, 67, 0.3); }
         .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
-        .relay-card { 
-            background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; 
-            padding: 20px; text-align: center; transition: all 0.3s ease;
-        }
+        .relay-card { background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 20px; text-align: center; }
         .relay-card i { font-size: 30px; margin-bottom: 10px; display: block; }
-        .relay-card span { font-size: 14px; font-weight: 600; opacity: 0.8; }
-        .relay-card .status { font-size: 11px; margin-top: 5px; display: block; letter-spacing: 1px; }
-        .relay-card.ON { 
-            background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main);
-            box-shadow: 0 0 15px rgba(157, 80, 187, 0.3);
-        }
+        .relay-card.ON { background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main); box-shadow: 0 0 15px rgba(157, 80, 187, 0.3); }
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
-        
-        .audio-monitor-card {
-            background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main);
-            border-radius: 15px; padding: 12px 20px; display: flex; align-items: center;
-            justify-content: space-between; gap: 15px; margin-bottom: -5px;
-        }
+        .audio-monitor-card { background: rgba(157, 80, 187, 0.1); border: 1px dashed var(--purple-main); border-radius: 15px; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 15px; }
         .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
         .audio-monitor-card audio { height: 30px; border-radius: 5px; outline: none; }
-
-        .chat-card {
-            background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1);
-            display: flex; flex-direction: column; height: 430px; overflow: hidden;
-        }
+        .chat-card { background: var(--card-bg); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; height: 430px; overflow: hidden; }
         .chat-window { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-        .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
+        .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; }
         .user-msg { align-self: flex-end; background: var(--purple-main); color: white; border-bottom-right-radius: 4px; }
         .ai-msg { align-self: flex-start; background: rgba(255,255,255,0.1); color: #eee; border-bottom-left-radius: 4px; }
         .system-msg { align-self: center; background: rgba(255, 159, 67, 0.1); color: #ff9f43; border: 1px dashed #ff9f43; font-size: 12px; border-radius: 10px; }
         .input-area { padding: 15px; background: rgba(0,0,0,0.2); display: flex; gap: 10px; }
-        .input-area input {
-            flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 50px; padding: 12px 20px; color: white; outline: none; font-size: 15px;
-        }
-        .input-area input:focus { border-color: var(--purple-main); }
-        .input-area button {
-            background: var(--purple-main); color: white; border: none;
-            width: 45px; height: 45px; border-radius: 50%; cursor: pointer;
-            display: flex; align-items: center; justify-content: center; transition: 0.3s;
-        }
-        @media (max-width: 600px) {
-            header { flex-direction: column; gap: 8px; }
-            .grid { grid-template-columns: repeat(2, 1fr); }
-            .audio-monitor-card { flex-direction: column; text-align: center; }
-        }
+        .input-area input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 50px; padding: 12px 20px; color: white; outline: none; }
+        .input-area button { background: var(--purple-main); color: white; border: none; width: 45px; height: 45px; border-radius: 50%; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -138,7 +105,7 @@ DASHBOARD_TEMPLATE = """
         </div>
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! Infinite Voice Stream Engine is online. Say 'RoomX' and speak as long as you want.</div>
+                <div class="msg ai-msg">Welcome back Zion! Pure Push-to-Talk Stream mode active. Hold Boot button and speak as long as you want.</div>
             </div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
@@ -178,7 +145,7 @@ DASHBOARD_TEMPLATE = """
                     badge.classList.remove('online', 'streaming');
                     if(data.state === "Streaming") {
                         badge.classList.add('streaming');
-                        text.innerText = "Voice Stream Processing...";
+                        text.innerText = "Streaming Audio Input...";
                     } else if(data.state === "Online") {
                         badge.classList.add('online');
                         text.innerText = "HomeX Connected to Internet";
@@ -266,6 +233,24 @@ def handle_command():
         esp32_current_state = "Streaming"
         chunk_bytes = request.get_data()
         
+        # ইউজার যদি বাটন ছেড়ে দেয়, ইএসপি ৩২ একটি ০ সাইজের ফিনিশিং প্যাকেট পাঠাবে
+        if len(chunk_bytes) == 0:
+            if len(audio_buffer) >= 15000:
+                full_audio = bytes(audio_buffer)
+                audio_buffer = bytearray()
+                silent_chunks_count = 0
+                has_speech_started = False
+                ui_notification_sent = False
+                esp32_current_state = "Online"
+                return transcribe_and_process(full_audio)
+            else:
+                audio_buffer = bytearray()
+                has_speech_started = False
+                ui_notification_sent = False
+                esp32_current_state = "Online"
+                return jsonify({"status": "Ignored", "reason": "Too short"}), 200
+        
+        # ডাটা রিসিভ ও বাফারিং লজিক
         if len(chunk_bytes) > 0:
             audio_data = np.frombuffer(chunk_bytes, dtype=np.int16)
             amplitude = np.max(np.abs(audio_data)) if len(audio_data) > 0 else 0
@@ -275,7 +260,6 @@ def handle_command():
                 silent_chunks_count = 0
                 if not has_speech_started:
                     has_speech_started = True
-                    # ফিক্সড: নোটিফিকেশন একবারই পুশ হবে, স্প্যাম লুপ ট্রিগার করবে না
                     if not ui_notification_sent:
                         ui_pending_messages.append({"type": "voice_start"})
                         ui_notification_sent = True
@@ -284,10 +268,9 @@ def handle_command():
                     audio_buffer.extend(chunk_bytes)
                     silent_chunks_count += 1
             
+            # বাটন টিপে ধরে রেখে কথা শেষ করে ১.৫ সেকেন্ড চুপ থাকলেও অটোমেটিক প্রসেস লক হবে
             if has_speech_started and silent_chunks_count >= SILENCE_DURATION_CHUNKS:
                 full_audio = bytes(audio_buffer)
-                
-                # স্টেট এবং নোটিফিকেশন ট্র্যাকার রিসেট
                 audio_buffer = bytearray()
                 silent_chunks_count = 0
                 has_speech_started = False
@@ -296,8 +279,6 @@ def handle_command():
                 
                 if len(full_audio) >= 15000:
                     return transcribe_and_process(full_audio)
-                else:
-                    return jsonify({"status": "Ignored", "reason": "Too short"}), 200
                     
         return jsonify({"status": "Streaming", "speech": has_speech_started}), 200
     else:
@@ -359,7 +340,7 @@ def process_with_groq(user_message, source="manual"):
     Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
     Current States: {json.dumps(current_relays)}
     Rules: 
-    1. Extract target device and state command. Ignore the wake word 'RoomX' if present.
+    1. Extract target device and state command.
     2. Maintain all other relay assignments exactly as they are in the CURRENT RELAY STATES.
     3. Output JSON ONLY. Scheme: {{"reply": "text", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
 
