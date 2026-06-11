@@ -179,7 +179,6 @@ DASHBOARD_TEMPLATE = """
                     const badge = document.getElementById('conn-status');
                     const text = document.getElementById('conn-text');
                     
-                    // রিয়েল-টাইম ৩-স্টেট কানেকশন সিগন্যাল হ্যান্ডলিং লজিক
                     badge.classList.remove('online', 'streaming');
                     if(data.state === "Streaming") {
                         badge.classList.add('streaming');
@@ -198,7 +197,7 @@ DASHBOARD_TEMPLATE = """
                             } else {
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
-                                audioPlayer.load(); // ভয়েস ট্র্যাকার রিলোড
+                                audioPlayer.load(); 
                             }
                         });
                         chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -235,7 +234,7 @@ DASHBOARD_TEMPLATE = """
         }
         
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateHub, 1000); // আরও রিয়েল-টাইম করতে ১ সেকেন্ডে রিফ্রেশ
+        setInterval(updateHub, 1000); 
         updateHub();
         document.getElementById('chat-msg').focus();
     </script>
@@ -258,7 +257,6 @@ def get_voice_track():
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
     
-    # লাস্ট ৫ সেকেন্ডে কোনো রেসপন্স না আসলে ডিসকানেক্টেড
     if time.time() - last_esp32_seen > 5.0:
         esp32_current_state = "Disconnected"
         
@@ -266,7 +264,6 @@ def get_latest_events():
     ui_pending_messages.clear()
     return jsonify({"state": esp32_current_state, "new_messages": messages_to_send})
 
-# এন্ডপয়েন্ট ১: হার্টবিট রিসিভার (ESP32 ওয়াইফাইয়ে যুক্ত হলেই এটি হিট করবে)
 @app.route('/esp32-ping', methods=['POST'])
 def esp32_ping():
     global last_esp32_seen, esp32_current_state
@@ -275,30 +272,27 @@ def esp32_ping():
         esp32_current_state = "Online"
     return jsonify({"status": "acknowledged"}), 200
 
-# এন্ডপয়েন্ট ২: মেইন ভয়েস ও টেক্সট কমান্ড প্রসেসর
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
     global last_esp32_seen, ui_pending_messages, esp32_current_state
     
     last_esp32_seen = time.time()
     
-    # চেক করা হচ্ছে ইনপুট কি ম্যানুয়াল টেক্সট নাকি ESP32 এর র বাইনারি স্ট্রিম
     if request.headers.get('Content-Type') == 'application/octet-stream':
         esp32_current_state = "Streaming"
         ui_pending_messages.append({"type": "voice_start"})
         
-        # সরাসরি ইনকামিং র বাইনারি ডেটা রিড করা হচ্ছে (ESP32 এর ওপর কোনো লোড নেই)
         audio_bytes = request.get_data()
         
-        if len(audio_bytes) < 2000:
+        # ফিক্সড: সর্বনিম্ন লিমিটেশন ২ সেকেন্ড থেকে বাড়িয়ে ১৫ সেকেন্ড (৪৮০,০০০ বাইট) করা হলো
+        if len(audio_bytes) < 480000:
             esp32_current_state = "Online"
-            return jsonify({"error": "Audio track too short"}), 400
+            return jsonify({"error": "Audio track too short. Minimum 15 seconds required."}), 400
             
         response = transcribe_and_process(audio_bytes)
         esp32_current_state = "Online"
         return response
     else:
-        # ম্যানুয়াল চ্যাট ইনপুট প্রসেস
         data = request.get_json() or {}
         command_text = data.get("text", "").strip()
         if command_text:
@@ -325,7 +319,6 @@ def transcribe_and_process(audio_bytes):
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
         
-        # সার্ভার নিজে থেকে সম্পূর্ণ স্ট্যান্ডার্ড WAV ফাইল স্ট্রাকচার তৈরি করছে
         last_recorded_wav = header + audio_bytes
         wav_io = io.BytesIO(last_recorded_wav)
         wav_io.name = "audio.wav"
