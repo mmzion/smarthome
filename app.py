@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import numpy as np
 from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
@@ -13,17 +12,15 @@ app = Flask(__name__)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
-# Global System Stream States
+# Global System Stream States (3 সেকেন্ডের দেয়াল ভাঙার জন্য গ্লোবাল বাফার)
 audio_buffer = bytearray()
-has_speech_started = False
 last_recorded_wav = None
-ui_notification_sent = False
-
 chat_history = []
-MAX_HISTORY_LENGTH = 5 
-last_esp32_seen = 0  
+MAX_HISTORY_LENGTH = 5  
+last_esp32_seen = 0   
 esp32_current_state = "Disconnected" 
 ui_pending_messages = []
+ui_notification_sent = False
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -260,7 +257,7 @@ def esp32_ping():
 
 @app.route('/voice-command', methods=['POST'])
 def handle_command():
-    global last_esp32_seen, ui_pending_messages, esp32_current_state, audio_buffer, has_speech_started, ui_notification_sent
+    global last_esp32_seen, ui_pending_messages, esp32_current_state, audio_buffer, ui_notification_sent
     
     last_esp32_seen = time.time()
     
@@ -268,35 +265,32 @@ def handle_command():
         esp32_current_state = "Streaming"
         chunk_bytes = request.get_data()
         
-        # ট্র্যাকার ১: ইউজার সশরীরে বাটন ছেড়ে দিলে (0 বাইটের এন্ড-প্যাকেট আসলে) বাফার লক হবে
+        # ট্র্যাকার ফিক্স: ইউজার যখনই ফিজিক্যালি বাটন ছেড়ে দেবে (০ বাইটের এন্ড-প্যাকেট আসবে) তখনই বাফার লক হবে
         if len(chunk_bytes) == 0:
             if len(audio_buffer) >= 15000:
                 full_audio = bytes(audio_buffer)
                 
-                # সম্পূর্ণ গ্লোবাল স্টেট রিসেট
+                # সম্পূর্ণ সেশন প্যারামিটার রিসেট (পরবর্তী কমান্ডের জন্য)
                 audio_buffer = bytearray()
-                has_speech_started = False
                 ui_notification_sent = False
                 esp32_current_state = "Online"
                 
+                # ক্রcritical রিটার্ন ট্রিগার চেইন
                 return transcribe_and_process(full_audio)
             else:
                 audio_buffer = bytearray()
-                has_speech_started = False
                 ui_notification_sent = False
                 esp32_current_state = "Online"
                 return jsonify({"status": "Ignored", "reason": "Too short"}), 200
         
-        # ট্র্যাকার ২: ১.৫ সেকেন্ডের নীরবতা ডিটেকশন লজিক সম্পূর্ণ ফেলে দিয়ে শুধুমাত্র অনবরত ডাটা কালেক্ট করা
+        # সাইলেন্স লজিক সম্পূর্ণ ড্রপ করে অনবরত অডিও বাফার এক্সটেন্ড করা
         if len(chunk_bytes) > 0:
             audio_buffer.extend(chunk_bytes)
-            if not has_speech_started:
-                has_speech_started = True
-                if not ui_notification_sent:
-                    ui_pending_messages.append({"type": "voice_start"})
-                    ui_notification_sent = True
+            if not ui_notification_sent:
+                ui_pending_messages.append({"type": "voice_start"})
+                ui_notification_sent = True
                     
-        return jsonify({"status": "Streaming", "speech": True}), 200
+        return jsonify({"status": "Streaming"}), 200
     else:
         data = request.get_json() or {}
         command_text = data.get("text", "").strip()
