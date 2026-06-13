@@ -134,7 +134,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! Studio Quality Flash-Buffered Audio Mode Active.</div>
+                <div class="msg ai-msg">Welcome back Zion! Studio Quality Flash-Buffered Voice Assistant Mode Active.</div>
             </div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
@@ -345,17 +345,27 @@ def process_with_groq(user_message, source="manual"):
         if res.status_code == 200 and res.json(): current_relays = res.json()
     except: pass
 
-    system_instruction = f"""You are RoomX AI, an elite smart home operating system created for Zion. 
-    Strict Mapping: 
+    # আপগ্রেডেড ভয়েস অ্যাসিস্ট্যান্ট প্রম্পট রুলস (চ্যাট + অটোমেশন)
+    system_instruction = f"""You are RoomX AI, an elite and intelligent conversational Voice Assistant (similar to Alexa or Google Assistant) created for Zion.
+
+    PRIMARY ROLE: Be an engaging, smart, and helpful conversational partner. Chat naturally, answer general knowledge questions, tell stories/jokes, or explain complex data if requested. If you need updated information or a fact you aren't fully certain of, simulate a smart web data lookup to provide the most accurate, concise, and helpful reply.
+
+    SECONDARY ROLE (SMART HOME HARDWARE INTEGRATION): 
+    You have direct control over Zion's smart home hardware via these exact mappings:
     - relay_1: Main Light
     - relay_2: Dim Light
     - relay_3: Fan
     - relay_4: Socket
-    Current States: {json.dumps(current_relays)}
-    Rules: 
-    1. Extract target device and state command.
-    2. Maintain all other relay assignments exactly as they are in the CURRENT RELAY STATES.
-    3. Output JSON ONLY. Scheme: {{"reply": "text", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
+
+    CURRENT RELAY STATES: {json.dumps(current_relays)}
+
+    CRITICAL RULES FOR HARDWARE CONTROL:
+    1. Look at the user's message. If they explicitly ask to turn a device ON or OFF, extract that target device and update its state in the JSON 'relays' object.
+    2. If the user is just chatting, asking a question, or talking about something unrelated to turning devices on/off, DO NOT change any relay states! Maintain all 4 relay assignments EXACTLY as they are in the CURRENT RELAY STATES.
+    3. Your conversational answer goes into the 'reply' field. Make it sound like a friendly, natural voice assistant response (short and sweet, optimized for voice output).
+
+    OUTPUT FORMAT: You must reply with a valid JSON object ONLY. Do not include markdown formatting or wrappers like ```json. Use this exact schema:
+    {{"reply": "Your natural assistant response text here", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
 
     messages = [{"role": "system", "content": system_instruction}]
     for h in chat_history:
@@ -370,9 +380,10 @@ def process_with_groq(user_message, source="manual"):
             response_format={"type": "json_object"}
         )
         result = json.loads(completion.choices[0].message.content)
-        ai_reply = result.get("reply", "Executed.")
+        ai_reply = result.get("reply", "I'm on it, Zion.")
         updates = result.get("relays", current_relays)
         
+        # ফায়ারবেসে রিয়েল-টাইম স্টেট প্যাচিং
         requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
         
         chat_history.append({"user": user_message, "ai": ai_reply})
@@ -382,8 +393,8 @@ def process_with_groq(user_message, source="manual"):
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
-    except:
-        return jsonify({"status": "JSON Parse Error"}), 500
+    except Exception as e:
+        return jsonify({"status": "JSON Parse Error", "error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
