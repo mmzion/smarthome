@@ -134,7 +134,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! Studio Quality 16kHz Audio Processing Active.</div>
+                <div class="msg ai-msg">Welcome back Zion! Studio Quality Flash-Buffered Audio Mode Active.</div>
             </div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
@@ -310,7 +310,7 @@ def transcribe_and_process(audio_bytes):
         # পিওর ক্রিস্টাল ক্লিয়ার WAV হেডার ম্যাপিং (16kHz, 16-bit PCM Mono)
         header[22:24] = (1).to_bytes(2, 'little')      # 1 (Mono Channel)
         header[24:28] = (16000).to_bytes(4, 'little')  # Sample Rate: 16000 Hz
-        header[28:32] = (32000).to_bytes(4, 'little')  # Byte Rate (16000 * 1 * 2): 32000 bytes/sec
+        header[28:32] = (32000).to_bytes(4, 'little')  # Byte Rate: 32000 bytes/sec
         header[32:34] = (2).to_bytes(2, 'little')      # Block Align: 2 bytes
         header[34:36] = (16).to_bytes(2, 'little')     # Bits per Sample: 16-bit
         
