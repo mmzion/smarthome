@@ -129,12 +129,12 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             <div class="relay-card OFF"><span>Loading Sync...</span></div>
         </div>
         <div class="audio-monitor-card">
-            <span><i class="fas fa-headphones-simple"></i> Live Voice Input Track (11kHz 16-bit):</span>
+            <span><i class="fas fa-headphones-simple"></i> Live Voice Input Track (16kHz 16-bit):</span>
             <audio id="audio-player" controls src="/get-voice-track"></audio>
         </div>
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! Crystal Clear Audio Mode Active (11025Hz/16-bit).</div>
+                <div class="msg ai-msg">Welcome back Zion! Studio Quality 16kHz Audio Processing Active.</div>
             </div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
@@ -280,7 +280,7 @@ def handle_command():
         
         audio_bytes = request.get_data()
         
-        if len(audio_bytes) < 1000:
+        if len(audio_bytes) < 2000:
             esp32_current_state = "Online"
             return jsonify({"error": "Audio track too short"}), 400
             
@@ -307,11 +307,11 @@ def transcribe_and_process(audio_bytes):
         header[16:20] = (16).to_bytes(4, 'little')
         header[20:22] = (1).to_bytes(2, 'little')      
         
-        # হাই-কোয়ালিটি থ্রেশহোল্ড ব্যালেন্সড WAV হেডার (11025Hz, 16-bit PCM)
+        # পিওর ক্রিস্টাল ক্লিয়ার WAV হেডার ম্যাপিং (16kHz, 16-bit PCM Mono)
         header[22:24] = (1).to_bytes(2, 'little')      # 1 (Mono Channel)
-        header[24:28] = (11025).to_bytes(4, 'little')  # Sample Rate: 11025 Hz
-        header[28:32] = (22050).to_bytes(4, 'little')  # Byte Rate (11025 * 1 * 2): 22050 bytes/sec
-        header[32:34] = (2).to_bytes(2, 'little')      # Block Align (Channels * BitsPerSample / 8): 2 bytes
+        header[24:28] = (16000).to_bytes(4, 'little')  # Sample Rate: 16000 Hz
+        header[28:32] = (32000).to_bytes(4, 'little')  # Byte Rate (16000 * 1 * 2): 32000 bytes/sec
+        header[32:34] = (2).to_bytes(2, 'little')      # Block Align: 2 bytes
         header[34:36] = (16).to_bytes(2, 'little')     # Bits per Sample: 16-bit
         
         header[36:40] = b'data'
@@ -345,8 +345,12 @@ def process_with_groq(user_message, source="manual"):
         if res.status_code == 200 and res.json(): current_relays = res.json()
     except: pass
 
-    system_instruction = f"""You are RoomX AI, an elite smart home operating system. 
-    Mapping: r1:Main Light, r2:Dim Light, r3:Fan, r4:Socket.
+    system_instruction = f"""You are RoomX AI, an elite smart home operating system created for Zion. 
+    Strict Mapping: 
+    - relay_1: Main Light
+    - relay_2: Dim Light
+    - relay_3: Fan
+    - relay_4: Socket
     Current States: {json.dumps(current_relays)}
     Rules: 
     1. Extract target device and state command.
