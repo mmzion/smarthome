@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
 import io
+from duckduckgo_search import DDGS  # নতুন লাইভ সার্চ ইঞ্জিন ডিপেন্ডেন্সি
 
 app = Flask(__name__)
 
@@ -17,8 +18,22 @@ last_recorded_wav = None
 chat_history = []
 MAX_HISTORY_LENGTH = 5 
 last_esp32_seen = 0  
-esp32_current_state = "Disconnected" # Disconnected, Online, Streaming
+esp32_current_state = "Disconnected"
 ui_pending_messages = []
+
+# নতুন ফাংশন: ইন্টারনেট থেকে রিয়েল-টাইম তথ্য খোঁজার জন্য
+void_search_cache = ""
+def get_live_internet_data(query):
+    try:
+        with DDGS() as ddgs:
+            # সর্বশেষ ৩টি প্রাসঙ্গিক ওয়েব রেজাল্ট স্ক্র্যাপ করা হবে
+            results = [r for r in ddgs.text(query, max_results=3)]
+            if results:
+                combined_text = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+                return combined_text
+    except Exception as e:
+        print(f"Search Error: {str(e)}")
+    return "No real-time search results found."
 
 DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -134,7 +149,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! Studio Quality Flash-Buffered Voice Assistant Mode Active.</div>
+                <div class="msg ai-msg">Welcome back Zion! Studio Quality Flash-Buffered Voice Assistant Mode Active with Live Web Search Engine.</div>
             </div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
@@ -307,12 +322,11 @@ def transcribe_and_process(audio_bytes):
         header[16:20] = (16).to_bytes(4, 'little')
         header[20:22] = (1).to_bytes(2, 'little')      
         
-        # পিওর ক্রিস্টাল ক্লিয়ার WAV হেডার ম্যাপিং (16kHz, 16-bit PCM Mono)
-        header[22:24] = (1).to_bytes(2, 'little')      # 1 (Mono Channel)
-        header[24:28] = (16000).to_bytes(4, 'little')  # Sample Rate: 16000 Hz
-        header[28:32] = (32000).to_bytes(4, 'little')  # Byte Rate: 32000 bytes/sec
-        header[32:34] = (2).to_bytes(2, 'little')      # Block Align: 2 bytes
-        header[34:36] = (16).to_bytes(2, 'little')     # Bits per Sample: 16-bit
+        header[22:24] = (1).to_bytes(2, 'little')
+        header[24:28] = (16000).to_bytes(4, 'little')
+        header[28:32] = (32000).to_bytes(4, 'little')
+        header[32:34] = (2).to_bytes(2, 'little')
+        header[34:36] = (16).to_bytes(2, 'little')
         
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
@@ -345,10 +359,28 @@ def process_with_groq(user_message, source="manual"):
         if res.status_code == 200 and res.json(): current_relays = res.json()
     except: pass
 
-    # আপগ্রেডেড ভয়েস অ্যাসিস্ট্যান্ট প্রম্পট রুলস (চ্যাট + অটোমেশন)
-    system_instruction = f"""You are RoomX AI, an elite and intelligent conversational Voice Assistant (similar to Alexa or Google Assistant) created for Zion.
+    # লাইভ ওয়েব সার্চ মেকানিজম ট্রিগার
+    # ব্যবহারকারী সাধারণ প্রশ্ন জিজ্ঞাসা করলে ব্যাকএন্ড রিয়েল-টাইম ডাটা স্ক্র্যাপ করবে
+    live_web_context = "No search required."
+    lowered_msg = user_message.lower()
+    
+    # প্রশ্নবোধক বা সাধারণ তথ্যের জন্য সার্চ ইঞ্জিন সচল হবে (ডিভাইস কমান্ড বাদে)
+    if not any(x in lowered_msg for x in ["turn on", "turn off", "switch on", "switch off", "relay"]):
+        print(f"🔍 Executing Web Search for: {user_message}")
+        live_web_context = get_live_internet_data(user_message)
 
-    PRIMARY ROLE: Be an engaging, smart, and helpful conversational partner. Chat naturally, answer general knowledge questions, tell stories/jokes, or explain complex data if requested. If you need updated information or a fact you aren't fully certain of, simulate a smart web data lookup to provide the most accurate, concise, and helpful reply.
+    # বর্তমান সিস্টেমের সময় এবং বছরের সিঙ্ক
+    current_time_string = time.strftime("%A, %B %d, %Y, %I:%M %p")
+
+    system_instruction = f"""You are RoomX AI, an elite and intelligent conversational Voice Assistant created for Zion.
+    
+    CURRENT TIME CONTEXT: Today's date and time is exactly {current_time_string}. The current year is 2026.
+    
+    LIVE INTERNET SEARCH CONTEXT:
+    The following data was fetched just now from the live web for this request:
+    \"\"\"{live_web_context}\"\"\"
+
+    PRIMARY ROLE: Be an engaging, smart, and helpful conversational partner. Chat naturally, answer general knowledge questions, tell stories/jokes, or explain data. You MUST combine your existing knowledge with the provided 'LIVE INTERNET SEARCH CONTEXT' to answer current events, date/time queries, or political facts accurately based on the current year 2026.
 
     SECONDARY ROLE (SMART HOME HARDWARE INTEGRATION): 
     You have direct control over Zion's smart home hardware via these exact mappings:
@@ -362,7 +394,7 @@ def process_with_groq(user_message, source="manual"):
     CRITICAL RULES FOR HARDWARE CONTROL:
     1. Look at the user's message. If they explicitly ask to turn a device ON or OFF, extract that target device and update its state in the JSON 'relays' object.
     2. If the user is just chatting, asking a question, or talking about something unrelated to turning devices on/off, DO NOT change any relay states! Maintain all 4 relay assignments EXACTLY as they are in the CURRENT RELAY STATES.
-    3. Your conversational answer goes into the 'reply' field. Make it sound like a friendly, natural voice assistant response (short and sweet, optimized for voice output).
+    3. Your conversational answer goes into the 'reply' field. Make it sound like a friendly, natural voice assistant response (short, clear, optimized for voice output).
 
     OUTPUT FORMAT: You must reply with a valid JSON object ONLY. Do not include markdown formatting or wrappers like ```json. Use this exact schema:
     {{"reply": "Your natural assistant response text here", "relays": {{"relay_1": "ON/OFF", "relay_2": "ON/OFF", "relay_3": "ON/OFF", "relay_4": "ON/OFF"}}}}"""
@@ -383,7 +415,6 @@ def process_with_groq(user_message, source="manual"):
         ai_reply = result.get("reply", "I'm on it, Zion.")
         updates = result.get("relays", current_relays)
         
-        # ফায়ারবেসে রিয়েল-টাইম স্টেট প্যাচিং
         requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
         
         chat_history.append({"user": user_message, "ai": ai_reply})
