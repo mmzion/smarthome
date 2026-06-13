@@ -129,12 +129,12 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             <div class="relay-card OFF"><span>Loading Sync...</span></div>
         </div>
         <div class="audio-monitor-card">
-            <span><i class="fas fa-headphones-simple"></i> Live Voice Input Track (8kHz 8-bit):</span>
+            <span><i class="fas fa-headphones-simple"></i> Live Voice Input Track (11kHz 16-bit):</span>
             <audio id="audio-player" controls src="/get-voice-track"></audio>
         </div>
         <div class="chat-card">
             <div class="chat-window" id="chat-window">
-                <div class="msg ai-msg">Welcome back Zion! Optimized Low-RAM Audio Architecture Active (8kHz/8-bit).</div>
+                <div class="msg ai-msg">Welcome back Zion! Crystal Clear Audio Mode Active (11025Hz/16-bit).</div>
             </div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
@@ -280,7 +280,7 @@ def handle_command():
         
         audio_bytes = request.get_data()
         
-        if len(audio_bytes) < 500:
+        if len(audio_bytes) < 1000:
             esp32_current_state = "Online"
             return jsonify({"error": "Audio track too short"}), 400
             
@@ -307,12 +307,12 @@ def transcribe_and_process(audio_bytes):
         header[16:20] = (16).to_bytes(4, 'little')
         header[20:22] = (1).to_bytes(2, 'little')      
         
-        # ৮ কিলোহার্টজ, ৮-বিট মনোটোনিক পিআইএম কনফিগারেশন সিঙ্ক
-        header[22:24] = (1).to_bytes(2, 'little')      # 1 (Mono)
-        header[24:28] = (8000).to_bytes(4, 'little')   # Sample Rate: 8000 Hz
-        header[28:32] = (8000).to_bytes(4, 'little')   # Byte Rate: 8000 bytes/sec
-        header[32:34] = (1).to_bytes(2, 'little')      # Block Align: 1 byte
-        header[34:36] = (8).to_bytes(2, 'little')      # Bits per Sample: 8-bit
+        # হাই-কোয়ালিটি থ্রেশহোল্ড ব্যালেন্সড WAV হেডার (11025Hz, 16-bit PCM)
+        header[22:24] = (1).to_bytes(2, 'little')      # 1 (Mono Channel)
+        header[24:28] = (11025).to_bytes(4, 'little')  # Sample Rate: 11025 Hz
+        header[28:32] = (22050).to_bytes(4, 'little')  # Byte Rate (11025 * 1 * 2): 22050 bytes/sec
+        header[32:34] = (2).to_bytes(2, 'little')      # Block Align (Channels * BitsPerSample / 8): 2 bytes
+        header[34:36] = (16).to_bytes(2, 'little')     # Bits per Sample: 16-bit
         
         header[36:40] = b'data'
         header[40:44] = duration.to_bytes(4, 'little')
