@@ -5,8 +5,8 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
 import io
-from duckduckgo_search import DDGS  
-from gtts import gTTS              
+from duckduckgo_search import DDGS  # লাইভ সার্চ ইঞ্জিন ডিপেন্ডেন্সি
+from gtts import gTTS              # এআই টেক্সটকে ভয়েসে রূপান্তর করার লাইব্রেরি
 
 app = Flask(__name__)
 
@@ -22,18 +22,24 @@ last_esp32_seen = 0
 esp32_current_state = "Disconnected"
 ui_pending_messages = []
 
-# ইন্টারনেট থেকে রিয়েল-টাইম তথ্য খোঁজার ফাংশন (অনলি ফলব্যাক মোডে ট্রিগার হবে)
+# ইন্টারনেট থেকে রিয়েল-টাইম তথ্য খোঁজার ক্র্যাশ-প্রুফ ফাংশন (V5.x সামঞ্জস্যপূর্ণ)
 def get_live_internet_data(query):
     try:
+        print(f"📡 DuckDuckGo Engine Triggered For: {query}")
         with DDGS() as ddgs:
+            # max_results কমিয়ে ২ করা হলো যেন রেন্ডার কন্টেইনার ফাস্ট রেসপন্স করে
             search_results = ddgs.text(query, max_results=2)
-            results = [r for r in search_results] if search_results else []
-            if results:
-                combined_text = "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
+            if search_results:
+                results_list = []
+                for r in search_results:
+                    results_list.append(f"- {r.get('title', '')}: {r.get('body', '')}")
+                
+                combined_text = "\n".join(results_list)
+                print("✅ Live Web Data Fetched Successfully.")
                 return combined_text
     except Exception as e:
         print(f"🔍 Search Engine System Error: {str(e)}")
-    return "No real-time search results found."
+    return "No real-time search results found due to network timeout."
 
 DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -112,7 +118,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             <audio id="audio-player" controls src="/get-voice-track"></audio>
         </div>
         <div class="chat-card">
-            <div class="chat-window" id="chat-window"><div class="msg ai-msg">Welcome back Zion! Intelligent Dual-Route Fallback Search Engine Active.</div></div>
+            <div class="chat-window" id="chat-window"><div class="msg ai-msg">Welcome back Zion! High-Speed Fallback Engine Operational.</div></div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
                 <button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button>
@@ -163,6 +169,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                             if(msg.type === 'voice_start') {
                                 chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
                             } else {
+                                // ভয়েস ইনপুটের লেখা স্ক্রিনে পুশ করার ফিক্সড লাইন
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
                                 audioPlayer.load(); 
@@ -315,12 +322,15 @@ def process_with_groq(user_message, source="manual"):
 
     current_time_string = time.strftime("%A, %B %d, %Y, %I:%M %p")
 
-    # প্রথম রাউন্ডের প্রম্পট: গ্রককে ডিফল্ট ব্রেইন দিয়ে ট্রাই করতে বলা হচ্ছে
-    system_instruction = f"""You are RoomX AI created for Zion. Year: 2026. Time: {current_time_string}.
+    # কড়া বাংলাদেশ রুল ও ফলব্যাক পলিসি প্রম্পট ইঞ্জিনিয়ারিং
+    system_instruction = f"""You are RoomX AI created for Zion. Year: 2026. Current Time: {current_time_string}.
     Your hardware couplings: relay_1: Main Light, relay_2: Dim Light, relay_3: Fan, relay_4: Socket. Current states: {json.dumps(current_relays)}.
     
+    CRITICAL BANGLADESH CONTEXT (YEAR 2026):
+    Zion is from Bangladesh. Following the political uprising in August 2024, the Prime Minister post is vacant/abolished, and an Interim Government led by Chief Adviser Dr. Muhammad Yunus is running the country. If the user asks about the current PM, cabinet, or political facts of Bangladesh, your internal pre-trained memory is completely OUTDATED. You MUST set "search_required": true to fetch the absolute latest status from the web!
+
     INTELIGENT FALLBACK RULE: 
-    1. If the user asks for extremely recent information (like today's stock, news, current political updates of 2026) that you do NOT know internally, set "search_required" to true.
+    1. If the user asks for extremely recent information, political facts about Bangladesh, live scores, news, or current events of 2026, set "search_required" to true.
     2. If it's a general question, greetings, math, stories, or hardware control commands, answer it using your own brain and set "search_required" to false.
 
     OUTPUT SCHEMA: Return a valid JSON object ONLY:
@@ -333,7 +343,6 @@ def process_with_groq(user_message, source="manual"):
     messages.append({"role": "user", "content": user_message})
 
     try:
-        # ফার্স্ট পাস: গ্রক ইন্টারনাল মেমোরি দিয়ে ট্রাই করবে (সুপার ফাস্ট - ল্যাগ ফ্রি)
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
@@ -341,12 +350,9 @@ def process_with_groq(user_message, source="manual"):
         )
         result = json.loads(completion.choices[0].message.content)
         
-        # --- [ইন্টেলিজেন্ট ফলব্যাক চেকিং পার্ট] ---
+        # ফলব্যাক সার্চ ফিল্টার ট্র্যাকিং
         if result.get("search_required", False) == True:
-            print(f"🔍 FALLBACK TRIGGERED: Groq brain requested web search for: {user_message}")
             live_context = get_live_internet_data(user_message)
-            
-            # সেকেন্ড পাস: লাইভ ডেটাসহ গ্রককে রি-প্রম্পট করা
             second_instruction = system_instruction + f"\n\nLIVE SEARCH DATA FETCHED AS FALLBACK:\n\"\"\"{live_context}\"\"\"\nNow provide the final accurate answer using this data."
             messages[0] = {"role": "system", "content": second_instruction}
             
@@ -356,9 +362,8 @@ def process_with_groq(user_message, source="manual"):
                 response_format={"type": "json_object"}
             )
             result = json.loads(completion.choices[0].message.content)
-        # ----------------------------------------
 
-        ai_reply = result.get("reply", "Done.")
+        ai_reply = result.get("reply", "Processed.")
         updates = result.get("relays", current_relays)
         
         try:
@@ -376,7 +381,9 @@ def process_with_groq(user_message, source="manual"):
         
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
-        if source == "voice": ui_pending_messages.append({"user": user_message, "ai": ai_reply})
+        
+        # FIX: সোর্স ভয়েস হোক বা ম্যানুয়াল চ্যাট, গ্লোবাল পেন্ডিং লিস্টে ডেটা সিঙ্ক জোরদার করা হলো
+        ui_pending_messages.append({"user": user_message, "ai": ai_reply})
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
     except Exception as e:
