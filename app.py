@@ -363,13 +363,17 @@ def process_with_groq(user_message, source="manual"):
     global chat_history, ui_pending_messages
     
     clean_message = user_message.strip().replace(".", "").replace(",", "")
+    
+    # ফায়ারবেস ডেডলক প্রোটেকশন লজিক (০.৮ সেকেন্ড সেফ টাইমআউট)
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
-        res = requests.get(FIREBASE_URL, timeout=1.5)
-        if res.status_code == 200 and res.json(): 
-            current_relays = res.json()
-    except Exception: 
-        pass
+        res = requests.get(FIREBASE_URL, timeout=0.8)
+        if res.status_code == 200:
+            firebase_data = res.json()
+            if isinstance(firebase_data, dict):
+                current_relays = firebase_data
+    except Exception as fb_err:
+        print(f"⚠️ Firebase read timed out, using default states: {str(fb_err)}")
 
     live_web_context = "No search required."
     lowered_msg = user_message.lower()
@@ -428,7 +432,7 @@ def process_with_groq(user_message, source="manual"):
         except Exception:
             print("⚠️ Firebase hardware update patch failed.")
 
-        # --- [TTS অডিও জেনারেশন ইঞ্জিন - কন্ডিশনাল সেফটি ফিল্টার] ---
+        # --- [TTS অডিও জেনারেশন ইঞ্জিন - কন্ডিশনাল সেফটি ফিল্টার ফিক্স] ---
         if source == "voice":
             try:
                 tts = gTTS(text=ai_reply, lang='en')
