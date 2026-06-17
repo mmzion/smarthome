@@ -177,7 +177,6 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                     else if(data.state === "Online") { badge.classList.add('online'); text.innerText = "HomeX Connected"; }
                     else { text.innerText = "HomeX Disconnected"; }
 
-                    // --- [CRITICAL FIXED: ਡੂਪਲੀਕੇਟ ਮੈਸੇਜ ਫਿਲਟਰ ਅਤੇ ਪ੍ਰਸੈਸਿੰਗ ਮੈਸੇਜ ਰਿਮੂਵਲ] ---
                     if (data.new_messages && data.new_messages.length > 0) {
                         data.new_messages.forEach(function(msg) {
                             if(msg.type === 'voice_start') {
@@ -188,7 +187,6 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                                 const procMsg = document.getElementById('proc-msg');
                                 if(procMsg) procMsg.remove();
 
-                                // ডুপ্লিকেট কনটেন্ট চেকিং ফিল্টার চেইন
                                 if(!chatWindow.innerHTML.includes(msg.ai)) {
                                     chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                     chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
@@ -220,7 +218,6 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             .then(data => {
                 const aiResponse = data.reply || data.response || "Command executed.";
                 
-                // ম্যানুয়াল চ্যাটের জন্যও ডুপ্লিকেট সেফটি চেক
                 if(!chatWindow.innerHTML.includes(aiResponse)) {
                     chatWindow.innerHTML += '<div class="msg ai-msg">' + aiResponse + '</div>';
                 }
@@ -346,9 +343,12 @@ def process_with_groq(user_message, source="manual"):
     except Exception:
         pass
 
-    current_time_string = time.strftime("%A, %B %d, %Y, %I:%M %p")
+    # --- [TIMEZONE FIX COMPONENT] ---
+    from datetime import datetime, timedelta, timezone
+    bd_time = datetime.now(timezone.utc) + timedelta(hours=6)
+    current_time_string = bd_time.strftime("%A, %B %d, %Y, %I:%M %p")
+    # --------------------------------
 
-    # অফিশিয়াল Tavily সার্চ রাউটিং সিস্টেম প্রম্পট
     system_instruction = f"""You are RoomX AI, an elite smart voice assistant created for Zion.
     CURRENT TIME CONTEXT: Today's date is {current_time_string}. The current year is exactly 2026.
     
@@ -368,7 +368,6 @@ def process_with_groq(user_message, source="manual"):
     messages.append({"role": "user", "content": user_message})
 
     try:
-        # ১ম পাস: ইন্টারনাল ব্রেইন এক্সিকিউশন
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
@@ -376,7 +375,6 @@ def process_with_groq(user_message, source="manual"):
         )
         result = json.loads(completion.choices[0].message.content)
         
-        # ২য় পাস: Tavily AI লাইভ সার্চ ইভেন্ট ট্র্যাকিং
         if result.get("search_required", False) == True:
             live_context = get_live_internet_data(user_message)
             second_instruction = system_instruction + f"\n\nOFFICIAL REAL-TIME CONTEXT FETCHED:\n\"\"\"{live_context}\"\"\"\nAnswer accurately based on this 2026 update."
@@ -397,7 +395,6 @@ def process_with_groq(user_message, source="manual"):
         except Exception:
             pass
 
-        # TTS অডিও জেনারেশন (ভয়েস ইনপুট হলেই কেবল রান করবে)
         if source == "voice":
             try:
                 tts = gTTS(text=ai_reply, lang='en')
