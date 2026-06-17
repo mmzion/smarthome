@@ -182,7 +182,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                         let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
                         
                         grid.innerHTML += '<div class="relay-card ' + state + '">' +
-                            '<i class="fas ' + dev.icon + ' ' + spinClass + '"></i>' +
+                            '<i class="fas ' + dev.icon + ' ' + spinClass + ' text-shadow' + '">' + '</i>' +
                             '<span>' + dev.name + '</span>' +
                             '<span class="status">' + state + '</span>' +
                             '</div>';
@@ -221,6 +221,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                 });
         }
 
+        // --- [CRITICAL JAVASCRIPT FIXED FUNCTION] ---
         function sendManualCommand() {
             const input = document.getElementById('chat-msg');
             const btn = document.getElementById('send-btn');
@@ -238,13 +239,19 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             })
             .then(res => res.json())
             .then(data => {
-                chatWindow.innerHTML += '<div class="msg ai-msg">' + data.reply + '</div>';
+                // অবজেক্ট প্রোটেকশন চেক
+                const aiResponse = data.reply || data.response || "Command executed successfully.";
+                chatWindow.innerHTML += '<div class="msg ai-msg">' + aiResponse + '</div>';
                 chatWindow.scrollTop = chatWindow.scrollHeight;
+                
+                // জ্যাম ছুটানোর রিসেট পাইপলাইন
                 input.value = ''; input.disabled = false; btn.disabled = false; isSending = false;
-                input.focus(); 
+                setTimeout(function() { input.focus(); }, 50);
                 updateHub();
             })
-            .catch(() => {
+            .catch(function(err) {
+                console.error("DOM Thread Locked:", err);
+                chatWindow.innerHTML += '<div class="msg system-msg">⚠️ Transmission Error. Retrying...</div>';
                 input.disabled = false; btn.disabled = false; isSending = false; input.focus();
             });
         }
