@@ -22,7 +22,7 @@ last_esp32_seen = 0
 esp32_current_state = "Disconnected"
 ui_pending_messages = []
 
-# অফিশিয়াল Tavily AI দিয়ে ঝামেলা-মুক্ত রিয়েল-টাইম তথ্য খোঁজার ফাংশan
+# অফিশিয়াল Tavily AI দিয়ে ঝামেলা-মুক্ত ও ক্র্যাশ-প্রুফ রিয়েল-টাইম তথ্য খোঁজার ফাংশন
 def get_live_internet_data(query):
     if not TAVILY_API_KEY:
         print("⚠️ Tavily API Key is missing in Environment Variables!")
@@ -42,12 +42,10 @@ def get_live_internet_data(query):
         
         if res.status_code == 200:
             data = res.json()
-            # Tavily সরাসরি এআই-অপ্টিমাইজড অ্যান্সার সামারি প্রোভাইড করে
             if data.get("answer"):
                 print("✅ Live Web Context Extracted via Tavily.")
                 return data["answer"]
             
-            # ব্যাকআপ ট্র্যাকিং যদি সরাসরি অ্যান্সার না থাকে
             results = data.get("results", [])
             combined_text = "\n".join([f"- {r.get('title')}: {r.get('content')}" for r in results])
             return combined_text
@@ -111,7 +109,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         .chat-window { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
         .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
         .user-msg { align-self: flex-end; background: var(--purple-main); color: white; border-bottom-right-radius: 4px; }
-        .ai-msg { align-self: flex-start; background: rgba(255,255,255,0.1); color: #eee; border-bottom-left-radius: 4px; }
+        .ai-msg { align-self: flex-start; background: rgba(255, 255, 255, 0.1); color: #eee; border-bottom-left-radius: 4px; }
         .system-msg { align-self: center; background: rgba(255, 159, 67, 0.1); color: #ff9f43; border: 1px dashed #ff9f43; font-size: 12px; border-radius: 10px; }
         .input-area { padding: 15px; background: rgba(0,0,0,0.2); display: flex; gap: 10px; }
         .input-area input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 50px; padding: 12px 20px; color: white; outline: none; font-size: 15px; }
@@ -179,14 +177,23 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                     else if(data.state === "Online") { badge.classList.add('online'); text.innerText = "HomeX Connected"; }
                     else { text.innerText = "HomeX Disconnected"; }
 
+                    // --- [CRITICAL FIXED: ਡੂਪਲੀਕੇਟ ਮੈਸੇਜ ਫਿਲਟਰ ਅਤੇ ਪ੍ਰਸੈਸਿੰਗ ਮੈਸੇਜ ਰਿਮੂਵਲ] ---
                     if (data.new_messages && data.new_messages.length > 0) {
                         data.new_messages.forEach(function(msg) {
                             if(msg.type === 'voice_start') {
-                                chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
+                                if(!chatWindow.innerHTML.includes("Processing Incoming Audio...")) {
+                                    chatWindow.innerHTML += '<div class="msg system-msg" id="proc-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
+                                }
                             } else {
-                                chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
-                                chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
-                                audioPlayer.load(); 
+                                const procMsg = document.getElementById('proc-msg');
+                                if(procMsg) procMsg.remove();
+
+                                // ডুপ্লিকেট কনটেন্ট চেকিং ফিল্টার চেইন
+                                if(!chatWindow.innerHTML.includes(msg.ai)) {
+                                    chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
+                                    chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
+                                    audioPlayer.load(); 
+                                }
                             }
                         });
                         chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -212,7 +219,12 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             .then(res => res.json())
             .then(data => {
                 const aiResponse = data.reply || data.response || "Command executed.";
-                chatWindow.innerHTML += '<div class="msg ai-msg">' + aiResponse + '</div>';
+                
+                // ম্যানুয়াল চ্যাটের জন্যও ডুপ্লিকেট সেফটি চেক
+                if(!chatWindow.innerHTML.includes(aiResponse)) {
+                    chatWindow.innerHTML += '<div class="msg ai-msg">' + aiResponse + '</div>';
+                }
+                
                 chatWindow.scrollTop = chatWindow.scrollHeight;
                 input.value = ''; input.disabled = false; btn.disabled = false; isSending = false;
                 setTimeout(function() { input.focus(); }, 50);
@@ -336,17 +348,17 @@ def process_with_groq(user_message, source="manual"):
 
     current_time_string = time.strftime("%A, %B %d, %Y, %I:%M %p")
 
-    # ইন্টেলিজেন্ট এপিআই রাউটিং প্রম্পট
+    # অফিশিয়াল Tavily সার্চ রাউটিং সিস্টেম প্রম্পট
     system_instruction = f"""You are RoomX AI, an elite smart voice assistant created for Zion.
     CURRENT TIME CONTEXT: Today's date is {current_time_string}. The current year is exactly 2026.
     
     Your hardware couplings: relay_1: Main Light, relay_2: Dim Light, relay_3: Fan, relay_4: Socket. Current states: {json.dumps(current_relays)}.
     
     FALLBACK RULE: 
-    - If the user asks about current events, news, dynamic values, or real-time entities of 2026 (e.g., current leaders, scores, weather, statistics), you MUST set "search_required": true to fetch the data dynamically.
+    - If the user asks about current events, news, dynamic values, or real-time entities of 2026 (e.g., current leaders, scores, weather, statistics), you MUST set "search_required": true to fetch the data dynamically from the web.
     - If it's a general concept, code explanation, greetings, hardware control, or calculation, set "search_required": false.
 
-    OUTPUT SCHEMA: Return a valid JSON object ONLY. No markdown wrappers:
+    OUTPUT SCHEMA: Return a valid JSON object ONLY. Do not include markdown formatting or wrappers like ```json. Use this exact schema:
     {{"reply": "Your response text here", "search_required": true/false, "relays": {{"relay_1":"ON/OFF", "relay_2":"ON/OFF", "relay_3":"ON/OFF", "relay_4":"ON/OFF"}}}}"""
 
     messages = [{"role": "system", "content": system_instruction}]
@@ -356,7 +368,7 @@ def process_with_groq(user_message, source="manual"):
     messages.append({"role": "user", "content": user_message})
 
     try:
-        # ১ম পাস: ইন্টারনাল নলেজ চেক
+        # ১ম পাস: ইন্টারনাল ব্রেইন এক্সিকিউশন
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
@@ -364,7 +376,7 @@ def process_with_groq(user_message, source="manual"):
         )
         result = json.loads(completion.choices[0].message.content)
         
-        # ২য় পাস: যদি সার্চের প্রয়োজন হয়, Tavily AI রান করবে (১০০% স্ট্যাবল এবং অফিশিয়াল)
+        # ২য় পাস: Tavily AI লাইভ সার্চ ইভেন্ট ট্র্যাকিং
         if result.get("search_required", False) == True:
             live_context = get_live_internet_data(user_message)
             second_instruction = system_instruction + f"\n\nOFFICIAL REAL-TIME CONTEXT FETCHED:\n\"\"\"{live_context}\"\"\"\nAnswer accurately based on this 2026 update."
