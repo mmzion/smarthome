@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
 import io
-from duckduckgo_search import DDGS  # নতুন লাইভ সার্চ ইঞ্জিন ডিপেন্ডেন্সি
+from duckduckgo_search import DDGS  # লাইভ সার্চ ইঞ্জিন ডিপেন্ডেন্সি
 
 app = Flask(__name__)
 
@@ -21,18 +21,18 @@ last_esp32_seen = 0
 esp32_current_state = "Disconnected"
 ui_pending_messages = []
 
-# নতুন ফাংশন: ইন্টারনেট থেকে রিয়েল-টাইম তথ্য খোঁজার জন্য
-void_search_cache = ""
+# ইন্টারনেট থেকে রিয়েল-টাইম তথ্য খোঁজার অপ্টিমাইজড ফাংশন
 def get_live_internet_data(query):
     try:
         with DDGS() as ddgs:
-            # সর্বশেষ ৩টি প্রাসঙ্গিক ওয়েব রেজাল্ট স্ক্র্যাপ করা হবে
-            results = [r for r in ddgs.text(query, max_results=3)]
+            # duckduckgo_search v6+ এর জন্য সেফ জেনারেটর প্রসেসিং
+            search_results = ddgs.text(query, max_results=3)
+            results = [r for r in search_results] if search_results else []
             if results:
-                combined_text = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+                combined_text = "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
                 return combined_text
     except Exception as e:
-        print(f"Search Error: {str(e)}")
+        print(f"🔍 Search Engine System Error: {str(e)}")
     return "No real-time search results found."
 
 DASHBOARD_TEMPLATE = """<!DOCTYPE html>
@@ -167,6 +167,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                 .then(res => res.json())
                 .then(data => {
                     const grid = document.getElementById('device-grid');
+                    if(!data) return;
                     grid.innerHTML = '';
                     const devices = [
                         { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
@@ -185,7 +186,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                             '<span class="status">' + state + '</span>' +
                             '</div>';
                     });
-                });
+                }).catch(err => console.log("Firebase sync waiting..."));
 
             fetch('/get-latest-events')
                 .then(res => res.json())
@@ -248,7 +249,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         }
         
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateHub, 1000); 
+        setInterval(updateHub, 1500); // পোলিং রেট সামান্য অপ্টিমাইজ করা হলো 
         updateHub();
         document.getElementById('chat-msg').focus();
     </script>
@@ -269,11 +270,11 @@ def get_voice_track():
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
-    if time.time() - last_esp32_seen > 5.0:
+    if time.time() - last_esp32_seen > 6.0:
         esp32_current_state = "Disconnected"
         
     messages_to_send = list(ui_pending_messages)
-    ui_pending_messages.clear()
+    ui_pending_messages[:] = []  # থ্রেড-সেফ মেথডে পাইথনের গ্লোবাল লিস্ট ক্লিয়ার করা হলো
     return jsonify({"state": esp32_current_state, "new_messages": messages_to_send})
 
 @app.route('/esp32-ping', methods=['POST'])
@@ -356,20 +357,18 @@ def process_with_groq(user_message, source="manual"):
     current_relays = {"relay_1": "OFF", "relay_2": "OFF", "relay_3": "OFF", "relay_4": "OFF"}
     try:
         res = requests.get(FIREBASE_URL, timeout=1.5)
-        if res.status_code == 200 and res.json(): current_relays = res.json()
-    except: pass
+        if res.status_code == 200 and res.json(): 
+            current_relays = res.json()
+    except Exception: 
+        pass
 
-    # লাইভ ওয়েব সার্চ মেকানিজম ট্রিগার
-    # ব্যবহারকারী সাধারণ প্রশ্ন জিজ্ঞাসা করলে ব্যাকএন্ড রিয়েল-টাইম ডাটা স্ক্র্যাপ করবে
     live_web_context = "No search required."
     lowered_msg = user_message.lower()
     
-    # প্রশ্নবোধক বা সাধারণ তথ্যের জন্য সার্চ ইঞ্জিন সচল হবে (ডিভাইস কমান্ড বাদে)
     if not any(x in lowered_msg for x in ["turn on", "turn off", "switch on", "switch off", "relay"]):
         print(f"🔍 Executing Web Search for: {user_message}")
         live_web_context = get_live_internet_data(user_message)
 
-    # বর্তমান সিস্টেমের সময় এবং বছরের সিঙ্ক
     current_time_string = time.strftime("%A, %B %d, %Y, %I:%M %p")
 
     system_instruction = f"""You are RoomX AI, an elite and intelligent conversational Voice Assistant created for Zion.
@@ -415,10 +414,14 @@ def process_with_groq(user_message, source="manual"):
         ai_reply = result.get("reply", "I'm on it, Zion.")
         updates = result.get("relays", current_relays)
         
-        requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
+        try:
+            requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
+        except Exception:
+            print("⚠️ Firebase hardware update patch failed.")
         
         chat_history.append({"user": user_message, "ai": ai_reply})
-        if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
+        if len(chat_history) > MAX_HISTORY_LENGTH: 
+            chat_history.pop(0)
         
         if source == "voice":
             ui_pending_messages.append({"user": user_message, "ai": ai_reply})
