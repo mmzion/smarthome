@@ -268,7 +268,7 @@ def get_voice_track():
         return jsonify({"error": "No track yet"}), 404
     return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
-# নতুন রাউট: ESP32-S3 এর স্পিকারে বাজানোর জন্য AI জেনারেটেড অডিও ফাইল সার্ভ করা
+# ESP32-S3 এর স্পিকারে বাজানোর জন্য AI জেনারেটেড অডিও ফাইল সার্ভ করা
 @app.route('/get-ai-reply-audio', methods=['GET'])
 def get_ai_reply_audio():
     file_path = "/tmp/ai_response.mp3"  # Render লিনাক্স কন্টেইনারের সেফ রাইটেবল ডিরেক্টরি
@@ -428,15 +428,17 @@ def process_with_groq(user_message, source="manual"):
         except Exception:
             print("⚠️ Firebase hardware update patch failed.")
 
-        # --- [TTS অডিও জেনারেশন ইঞ্জিন] ---
-        # Render এর সিকিউর রাইটেবল ডিরেক্টরি /tmp/ তে ভয়েস ফাইল ডাইনামিকালি তৈরি হচ্ছে
-        try:
-            tts = gTTS(text=ai_reply, lang='en')
-            tts.save("/tmp/ai_response.mp3")
-            print(f"🔊 AI Voice Response Generated: {ai_reply}")
-        except Exception as tts_err:
-            print(f"⚠️ TTS Generation Failed: {str(tts_err)}")
-        # ---------------------------------
+        # --- [TTS অডিও জেনারেশন ইঞ্জিন - কন্ডিশনাল সেফটি ফিল্টার] ---
+        if source == "voice":
+            try:
+                tts = gTTS(text=ai_reply, lang='en')
+                tts.save("/tmp/ai_response.mp3")
+                print(f"🔊 AI Voice Response Generated for Speaker: {ai_reply}")
+            except Exception as tts_err:
+                print(f"⚠️ TTS Generation Failed: {str(tts_err)}")
+        else:
+            print("💻 Manual chat input detected. Skipping speaker audio generation to prevent lagging.")
+        # --------------------------------------------------------
         
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: 
