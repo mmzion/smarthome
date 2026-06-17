@@ -6,6 +6,7 @@ from groq import Groq
 import requests
 import io
 from duckduckgo_search import DDGS  # লাইভ সার্চ ইঞ্জিন ডিপেন্ডেন্সি
+from gtts import gTTS              # এআই টেক্সটকে ভয়েসে রূপান্তর করার লাইব্রেরি
 
 app = Flask(__name__)
 
@@ -25,7 +26,7 @@ ui_pending_messages = []
 def get_live_internet_data(query):
     try:
         with DDGS() as ddgs:
-            # duckduckgo_search v6+ এর জন্য সেফ জেনারেটর প্রসেসিং
+            # duckduckgo_search v5.3.1.b1 (Render Compatible) অনুযায়ী কুয়েরি প্রসেসিং
             search_results = ddgs.text(query, max_results=3)
             results = [r for r in search_results] if search_results else []
             if results:
@@ -249,7 +250,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         }
         
         function handleKeyPress(e) { if(e.key === 'Enter') sendManualCommand(); }
-        setInterval(updateHub, 1500); // পোলিং রেট সামান্য অপ্টিমাইজ করা হলো 
+        setInterval(updateHub, 1500); 
         updateHub();
         document.getElementById('chat-msg').focus();
     </script>
@@ -267,6 +268,14 @@ def get_voice_track():
         return jsonify({"error": "No track yet"}), 404
     return send_file(io.BytesIO(last_recorded_wav), mimetype="audio/wav")
 
+# নতুন রাউট: ESP32-S3 এর স্পিকারে বাজানোর জন্য AI জেনারেটেড অডিও ফাইল সার্ভ করা
+@app.route('/get-ai-reply-audio', methods=['GET'])
+def get_ai_reply_audio():
+    file_path = "/tmp/ai_response.mp3"  # Render লিনাক্স কন্টেইনারের সেফ রাইটেবল ডিরেক্টরি
+    if os.path.exists(file_path):
+        return send_file(file_path, mimetype="audio/mp3")
+    return jsonify({"error": "No audio response available"}), 404
+
 @app.route('/get-latest-events', methods=['GET'])
 def get_latest_events():
     global ui_pending_messages, last_esp32_seen, esp32_current_state
@@ -274,7 +283,7 @@ def get_latest_events():
         esp32_current_state = "Disconnected"
         
     messages_to_send = list(ui_pending_messages)
-    ui_pending_messages[:] = []  # থ্রেড-সেফ মেথডে পাইথনের গ্লোবাল লিস্ট ক্লিয়ার করা হলো
+    ui_pending_messages[:] = []  
     return jsonify({"state": esp32_current_state, "new_messages": messages_to_send})
 
 @app.route('/esp32-ping', methods=['POST'])
@@ -418,6 +427,16 @@ def process_with_groq(user_message, source="manual"):
             requests.patch(FIREBASE_URL, json=updates, timeout=1.5)
         except Exception:
             print("⚠️ Firebase hardware update patch failed.")
+
+        # --- [TTS অডিও জেনারেশন ইঞ্জিন] ---
+        # Render এর সিকিউর রাইটেবল ডিরেক্টরি /tmp/ তে ভয়েস ফাইল ডাইনামিকালি তৈরি হচ্ছে
+        try:
+            tts = gTTS(text=ai_reply, lang='en')
+            tts.save("/tmp/ai_response.mp3")
+            print(f"🔊 AI Voice Response Generated: {ai_reply}")
+        except Exception as tts_err:
+            print(f"⚠️ TTS Generation Failed: {str(tts_err)}")
+        # ---------------------------------
         
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: 
