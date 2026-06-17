@@ -5,13 +5,13 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 from groq import Groq
 import requests
 import io
-from duckduckgo_search import DDGS  # লাইভ সার্চ ইঞ্জিন ডিপেন্ডেন্সি
-from gtts import gTTS              # এআই টেক্সটকে ভয়েসে রূপান্তর করার লাইব্রেরি
+from gtts import gTTS              
 
 app = Flask(__name__)
 
-# Groq Configuration
+# Cloud API Configurations
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 FIREBASE_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json"
 
 # Global System States
@@ -22,24 +22,39 @@ last_esp32_seen = 0
 esp32_current_state = "Disconnected"
 ui_pending_messages = []
 
-# ইন্টারনেট থেকে রিয়েল-টাইম তথ্য খোঁজার ক্র্যাশ-প্রুফ ফাংশন (V5.x সামঞ্জস্যপূর্ণ)
+# অফিশিয়াল Tavily AI দিয়ে ঝামেলা-মুক্ত রিয়েল-টাইম তথ্য খোঁজার ফাংশan
 def get_live_internet_data(query):
+    if not TAVILY_API_KEY:
+        print("⚠️ Tavily API Key is missing in Environment Variables!")
+        return "Search failed due to missing API configuration."
+        
     try:
-        print(f"📡 DuckDuckGo Engine Triggered For: {query}")
-        with DDGS() as ddgs:
-            # max_results কমিয়ে ২ করা হলো যেন রেন্ডার কন্টেইনার ফাস্ট রেসপন্স করে
-            search_results = ddgs.text(query, max_results=2)
-            if search_results:
-                results_list = []
-                for r in search_results:
-                    results_list.append(f"- {r.get('title', '')}: {r.get('body', '')}")
-                
-                combined_text = "\n".join(results_list)
-                print("✅ Live Web Data Fetched Successfully.")
-                return combined_text
+        print(f"📡 Official Tavily Search Engine Triggered For: {query}")
+        payload = {
+            "api_key": TAVILY_API_KEY,
+            "query": query,
+            "search_depth": "basic",
+            "include_answer": True,
+            "max_results": 2
+        }
+        headers = {"Content-Type": "application/json"}
+        res = requests.post("https://api.tavily.com/search", json=payload, headers=headers, timeout=5.0)
+        
+        if res.status_code == 200:
+            data = res.json()
+            # Tavily সরাসরি এআই-অপ্টিমাইজড অ্যান্সার সামারি প্রোভাইড করে
+            if data.get("answer"):
+                print("✅ Live Web Context Extracted via Tavily.")
+                return data["answer"]
+            
+            # ব্যাকআপ ট্র্যাকিং যদি সরাসরি অ্যান্সার না থাকে
+            results = data.get("results", [])
+            combined_text = "\n".join([f"- {r.get('title')}: {r.get('content')}" for r in results])
+            return combined_text
+            
     except Exception as e:
-        print(f"🔍 Search Engine System Error: {str(e)}")
-    return "No real-time search results found due to network timeout."
+        print(f"🔍 Tavily Search System Error: {str(e)}")
+    return "Real-time web search timed out."
 
 DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -118,7 +133,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             <audio id="audio-player" controls src="/get-voice-track"></audio>
         </div>
         <div class="chat-card">
-            <div class="chat-window" id="chat-window"><div class="msg ai-msg">Welcome back Zion! High-Speed Fallback Engine Operational.</div></div>
+            <div class="chat-window" id="chat-window"><div class="msg ai-msg">Welcome back Zion! Official Tavily-Engineered Dynamic Search Pipeline Active.</div></div>
             <div class="input-area">
                 <input type="text" id="chat-msg" placeholder="Type a message or command..." onkeypress="handleKeyPress(event)">
                 <button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button>
@@ -169,7 +184,6 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                             if(msg.type === 'voice_start') {
                                 chatWindow.innerHTML += '<div class="msg system-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
                             } else {
-                                // ভয়েস ইনপুটের লেখা স্ক্রিনে পুশ করার ফিক্সড লাইন
                                 chatWindow.innerHTML += '<div class="msg user-msg" style="border: 1px dashed rgba(255,255,255,0.4);"><i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i>' + msg.user + '</div>';
                                 chatWindow.innerHTML += '<div class="msg ai-msg">' + msg.ai + '</div>';
                                 audioPlayer.load(); 
@@ -322,19 +336,18 @@ def process_with_groq(user_message, source="manual"):
 
     current_time_string = time.strftime("%A, %B %d, %Y, %I:%M %p")
 
-    # কড়া বাংলাদেশ রুল ও ফলব্যাক পলিসি প্রম্পট ইঞ্জিনিয়ারিং
-    system_instruction = f"""You are RoomX AI created for Zion. Year: 2026. Current Time: {current_time_string}.
+    # ইন্টেলিজেন্ট এপিআই রাউটিং প্রম্পট
+    system_instruction = f"""You are RoomX AI, an elite smart voice assistant created for Zion.
+    CURRENT TIME CONTEXT: Today's date is {current_time_string}. The current year is exactly 2026.
+    
     Your hardware couplings: relay_1: Main Light, relay_2: Dim Light, relay_3: Fan, relay_4: Socket. Current states: {json.dumps(current_relays)}.
     
-    CRITICAL BANGLADESH CONTEXT (YEAR 2026):
-    Zion is from Bangladesh. Following the political uprising in August 2024, the Prime Minister post is vacant/abolished, and an Interim Government led by Chief Adviser Dr. Muhammad Yunus is running the country. If the user asks about the current PM, cabinet, or political facts of Bangladesh, your internal pre-trained memory is completely OUTDATED. You MUST set "search_required": true to fetch the absolute latest status from the web!
+    FALLBACK RULE: 
+    - If the user asks about current events, news, dynamic values, or real-time entities of 2026 (e.g., current leaders, scores, weather, statistics), you MUST set "search_required": true to fetch the data dynamically.
+    - If it's a general concept, code explanation, greetings, hardware control, or calculation, set "search_required": false.
 
-    INTELIGENT FALLBACK RULE: 
-    1. If the user asks for extremely recent information, political facts about Bangladesh, live scores, news, or current events of 2026, set "search_required" to true.
-    2. If it's a general question, greetings, math, stories, or hardware control commands, answer it using your own brain and set "search_required" to false.
-
-    OUTPUT SCHEMA: Return a valid JSON object ONLY:
-    {{"reply": "Your friendly text reply", "search_required": true/false, "relays": {{"relay_1":"ON/OFF", "relay_2":"ON/OFF", "relay_3":"ON/OFF", "relay_4":"ON/OFF"}}}}"""
+    OUTPUT SCHEMA: Return a valid JSON object ONLY. No markdown wrappers:
+    {{"reply": "Your response text here", "search_required": true/false, "relays": {{"relay_1":"ON/OFF", "relay_2":"ON/OFF", "relay_3":"ON/OFF", "relay_4":"ON/OFF"}}}}"""
 
     messages = [{"role": "system", "content": system_instruction}]
     for h in chat_history:
@@ -343,6 +356,7 @@ def process_with_groq(user_message, source="manual"):
     messages.append({"role": "user", "content": user_message})
 
     try:
+        # ১ম পাস: ইন্টারনাল নলেজ চেক
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
@@ -350,10 +364,10 @@ def process_with_groq(user_message, source="manual"):
         )
         result = json.loads(completion.choices[0].message.content)
         
-        # ফলব্যাক সার্চ ফিল্টার ট্র্যাকিং
+        # ২য় পাস: যদি সার্চের প্রয়োজন হয়, Tavily AI রান করবে (১০০% স্ট্যাবল এবং অফিশিয়াল)
         if result.get("search_required", False) == True:
             live_context = get_live_internet_data(user_message)
-            second_instruction = system_instruction + f"\n\nLIVE SEARCH DATA FETCHED AS FALLBACK:\n\"\"\"{live_context}\"\"\"\nNow provide the final accurate answer using this data."
+            second_instruction = system_instruction + f"\n\nOFFICIAL REAL-TIME CONTEXT FETCHED:\n\"\"\"{live_context}\"\"\"\nAnswer accurately based on this 2026 update."
             messages[0] = {"role": "system", "content": second_instruction}
             
             completion = groq_client.chat.completions.create(
@@ -382,7 +396,6 @@ def process_with_groq(user_message, source="manual"):
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
         
-        # FIX: সোর্স ভয়েস হোক বা ম্যানুয়াল চ্যাট, গ্লোবাল পেন্ডিং লিস্টে ডেটা সিঙ্ক জোরদার করা হলো
         ui_pending_messages.append({"user": user_message, "ai": ai_reply})
             
         return jsonify({"status": "Success", "reply": ai_reply}), 200
