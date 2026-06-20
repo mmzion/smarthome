@@ -22,7 +22,7 @@ last_esp32_seen = 0
 esp32_current_state = "Disconnected"
 ui_pending_messages = []
 
-# অফিশিয়াল Tavily AI দিয়ে ঝামেলা-মুক্ত ও ক্র্যাশ-প্রুফ রিয়েল-টাইম তথ্য খোঁজার ফাংশন
+# অফিশিয়াল Tavily AI দিয়ে ঝামেলা-মুক্ত ও ক্র্যাশ-প্রুফ রিয়েল-টাইম তথ্য খোঁজার ফাংশন
 def get_live_internet_data(query):
     if not TAVILY_API_KEY:
         print("⚠️ Tavily API Key is missing in Environment Variables!")
@@ -300,23 +300,10 @@ def handle_command():
 def transcribe_and_process(audio_bytes):
     global last_recorded_wav
     try:
-        duration = len(audio_bytes)
-        header = bytearray(44)
-        header[0:4] = b'RIFF'
-        header[4:8] = (duration + 36).to_bytes(4, 'little')
-        header[8:12] = b'WAVE'
-        header[12:16] = b'fmt '
-        header[16:20] = (16).to_bytes(4, 'little')
-        header[20:22] = (1).to_bytes(2, 'little')      
-        header[22:24] = (1).to_bytes(2, 'little')
-        header[24:28] = (16000).to_bytes(4, 'little')
-        header[28:32] = (32000).to_bytes(4, 'little')
-        header[32:34] = (2).to_bytes(2, 'little')
-        header[34:36] = (16).to_bytes(2, 'little')
-        header[36:40] = b'data'
-        header[40:44] = duration.to_bytes(4, 'little')
+        # FIX: The ESP32 now sends data that already has a clean WAV header.
+        # We save it directly to 'last_recorded_wav' so the dashboard HTML5 audio element plays it perfectly!
+        last_recorded_wav = audio_bytes
         
-        last_recorded_wav = header + audio_bytes
         wav_io = io.BytesIO(last_recorded_wav)
         wav_io.name = "audio.wav"
 
@@ -330,6 +317,7 @@ def transcribe_and_process(audio_bytes):
             return jsonify({"status": "Ignored", "reason": "Empty transcription"}), 200
         return process_with_groq(user_text, source="voice")
     except Exception as e:
+        print(f"❌ Transcription error details: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 def process_with_groq(user_message, source="manual"):
