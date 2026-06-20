@@ -253,6 +253,7 @@ def get_voice_track():
 
 @app.route('/get-ai-reply-audio', methods=['GET'])
 def get_ai_reply_audio():
+    # FIXED: Serves the native MP3 track file for high-speed hardware decoding via ESP32-audioI2S
     file_path = "/tmp/ai_response.mp3"
     if os.path.exists(file_path):
         return send_file(file_path, mimetype="audio/mp3")
@@ -280,12 +281,12 @@ def handle_command():
     global last_esp32_seen, esp32_current_state
     last_esp32_seen = time.time()
     
-    # Ingest entire binary direct footprint cleanly from data headers
     if request.headers.get('Content-Type') == 'application/octet-stream':
         esp32_current_state = "Streaming"
         ui_pending_messages.append({"type": "voice_start"})
         
-        audio_bytes = request.get_data() # Pulls the full memory block at once
+        # Pull the complete raw WAV data payload block out of network memory
+        audio_bytes = request.get_data() 
         
         if len(audio_bytes) < 2000:
             esp32_current_state = "Online"
@@ -301,6 +302,7 @@ def handle_command():
             return process_with_groq(command_text, source="manual")
     return jsonify({"error": "Invalid request"}), 400
 
+void_str = ""
 def transcribe_and_process(audio_bytes):
     global last_recorded_wav
     try:
@@ -386,10 +388,12 @@ def process_with_groq(user_message, source="manual"):
 
         if source == "voice":
             try:
+                # Save standard MP3 output directly to disk footprint
                 tts = gTTS(text=ai_reply, lang='en')
                 tts.save("/tmp/ai_response.mp3")
-            except Exception:
-                pass
+                print("✅ AI response saved as native MP3 format.")
+            except Exception as e:
+                print(f"⚠️ TTS generation failure: {str(e)}")
         
         chat_history.append({"user": user_message, "ai": ai_reply})
         if len(chat_history) > MAX_HISTORY_LENGTH: chat_history.pop(0)
