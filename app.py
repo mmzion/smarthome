@@ -280,31 +280,13 @@ def handle_command():
     global last_esp32_seen, esp32_current_state
     last_esp32_seen = time.time()
     
-    is_chunked = request.headers.get('Transfer-Encoding') == 'chunked'
-    is_octet = request.headers.get('Content-Type') == 'application/octet-stream'
-    
-    if is_chunked or is_octet:
+    # Ingest entire binary direct footprint cleanly from data headers
+    if request.headers.get('Content-Type') == 'application/octet-stream':
         esp32_current_state = "Streaming"
         ui_pending_messages.append({"type": "voice_start"})
         
-        # Manually collecting chunked audio buffers from WSGI pipeline socket context
-        try:
-            audio_stream = io.BytesIO()
-            while True:
-                chunk = request.environ['wsgi.input'].read(4096)
-                if not chunk:
-                    break
-                audio_stream.write(chunk)
-            
-            audio_bytes = audio_stream.getvalue()
-            audio_stream.close()
-            print(f"📥 Successfully collected payload stream: {len(audio_bytes)} bytes")
-            
-        except Exception as e:
-            print(f"❌ WSGI Socket reading failure: {str(e)}")
-            esp32_current_state = "Online"
-            return jsonify({"error": "Chunk gathering crashed"}), 500
-
+        audio_bytes = request.get_data() # Pulls the full memory block at once
+        
         if len(audio_bytes) < 2000:
             esp32_current_state = "Online"
             return jsonify({"error": "Audio track too short"}), 400
@@ -322,9 +304,7 @@ def handle_command():
 def transcribe_and_process(audio_bytes):
     global last_recorded_wav
     try:
-        # Save directly since the updated ESP32-S3 code includes the 44-byte WAV header
         last_recorded_wav = audio_bytes
-        
         wav_io = io.BytesIO(last_recorded_wav)
         wav_io.name = "audio.wav"
 
