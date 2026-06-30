@@ -11,8 +11,6 @@
             --purple-main: #9d50bb;
             --card-bg: rgba(255, 255, 255, 0.05);
             --text: #f5f5f5;
-            --green-glow: #00ff87;
-            --amber-glow: #ff9f43;
             --chat-bg: rgba(15, 12, 41, 0.6);
         }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -86,7 +84,7 @@
             font-size: 13px;
             line-height: 1.4;
         }
-        .msg.system {
+        .msg.bot {
             background: rgba(255, 255, 255, 0.1);
             color: #fff;
             align-self: flex-start;
@@ -124,9 +122,7 @@
             border-radius: 10px;
             cursor: pointer;
             font-size: 14px;
-            transition: background 0.2s;
         }
-        .chat-input-area button:hover { background: #853fa0; }
     </style>
 </head>
 <body>
@@ -135,51 +131,44 @@
     </header>
     <div class="container">
         <div id="device-grid" class="grid">
-            <div class="relay-card OFF"><span>Connecting Hub...</span></div>
+            <div class="relay-card OFF"><span>Syncing Devices...</span></div>
         </div>
 
         <div class="chat-section">
             <div class="chat-header">
-                <i class="fas fa-robot" style="color: var(--purple-main)"></i> AI Intelligence Terminal
+                <i class="fas fa-server" style="color: var(--purple-main)"></i> Render Live Backend Terminal
             </div>
             <div id="chat-box" class="chat-messages">
-                <div class="msg system">System initialized. Try typing commands like "turn on main light" or "turn off fan".</div>
+                <div class="msg bot">Connecting to smarthome-dgcp.onrender.com...</div>
             </div>
             <div class="chat-input-area">
-                <input type="text" id="cmd-input" placeholder="Type AI command here..." onkeypress="checkEnter(event)">
-                <button onclick="sendAICommand()"><i class="fas fa-paper-plane"></i></button>
+                <input type="text" id="cmd-input" placeholder="Send intelligence command to Render backend..." onkeypress="checkEnter(event)">
+                <button onclick="sendRenderCommand()"><i class="fas fa-paper-plane"></i></button>
             </div>
         </div>
     </div>
 
     <script>
         const FIREBASE_DB_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json";
+        const RENDER_API_URL = "https://smarthome-dgcp.onrender.com";
 
         const devices = [
-            { id: "relay_1", name: "Main Light", icon: "fa-lightbulb", keywords: ["main light", "light", "bulb"] },
-            { id: "relay_2", name: "Dim Light", icon: "fa-moon", keywords: ["dim light", "dim", "moon"] },
-            { id: "relay_3", name: "Fan", icon: "fa-fan", keywords: ["fan", "cooler"] },
-            { id: "relay_4", name: "Socket", icon: "fa-plug", keywords: ["socket", "plug"] }
+            { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
+            { id: "relay_2", name: "Dim Light", icon: "fa-moon" },
+            { id: "relay_3", name: "Fan", icon: "fa-fan" },
+            { id: "relay_4", name: "Socket", icon: "fa-plug" }
         ];
 
         let currentStates = {};
         let isUpdating = false;
 
+        // ফায়ারবেস থেকে রিয়েল-টাইম স্টেট রেন্ডার করা
         function fetchDatabase() {
             if (isUpdating) return;
-            
             fetch(FIREBASE_DB_URL)
                 .then(res => res.json())
                 .then(data => {
                     if (!data || isUpdating) return;
-                    
-                    // আগের স্টেটের সাথে তুলনা করে কোনো পরিবর্তন হলে চ্যাটে লগ দেখাবে
-                    devices.forEach(dev => {
-                        if(currentStates[dev.id] && currentStates[dev.id] !== data[dev.id]) {
-                            appendMessage(`System Log: ${dev.name} turned ${data[dev.id]} via sync.`, 'system');
-                        }
-                    });
-
                     currentStates = data;
                     renderGrid();
                 })
@@ -189,11 +178,9 @@
         function renderGrid() {
             const grid = document.getElementById('device-grid');
             grid.innerHTML = '';
-
             devices.forEach(dev => {
                 const state = currentStates[dev.id] || "OFF";
                 let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
-                
                 grid.innerHTML += `
                     <div class="relay-card ${state}" onclick="toggleRelay('${dev.id}')">
                         <i class="fas ${dev.icon} ${spinClass}"></i>
@@ -204,19 +191,13 @@
             });
         }
 
-        function toggleRelay(relayId, triggerSource = "UI") {
+        function toggleRelay(relayId) {
             isUpdating = true;
-            
             const currentState = currentStates[relayId] || "OFF";
             const newState = currentState === "ON" ? "OFF" : "ON";
             
             currentStates[relayId] = newState;
             renderGrid();
-
-            if(triggerSource === "UI") {
-                const targetDev = devices.find(d => d.id === relayId);
-                appendMessage(`System Log: ${targetDev.name} shifted to ${newState}.`, 'system');
-            }
 
             const updateData = {};
             updateData[relayId] = newState;
@@ -227,16 +208,48 @@
                 body: JSON.stringify(updateData)
             })
             .then(res => res.json())
-            .then(json => {
-                setTimeout(() => { isUpdating = false; }, 500);
+            .then(() => { setTimeout(() => { isUpdating = false; }, 500); })
+            .catch(err => { console.error(err); isUpdating = false; });
+        }
+
+        // রেন্ডার ক্লাউড সার্ভার থেকে চ্যাট লগের ডেটা আনা
+        function fetchChatHistory() {
+            fetch(`${RENDER_API_URL}/get_messages`)
+                .then(res => res.json())
+                .then(messages => {
+                    const chatBox = document.getElementById('chat-box');
+                    chatBox.innerHTML = ''; 
+                    messages.forEach(msg => {
+                        appendMessage(msg.text, msg.sender); // sender: 'user' অথবা 'bot'
+                    });
+                })
+                .catch(err => console.error("Render server sync error:", err));
+        }
+
+        // চ্যাট বক্স থেকে রেন্ডার ক্লাউডে সরাসরি কমান্ড পোস্ট করা
+        function sendRenderCommand() {
+            const input = document.getElementById('cmd-input');
+            const messageText = input.value.trim();
+            if (!messageText) return;
+
+            appendMessage(messageText, 'user');
+            input.value = '';
+
+            fetch(`${RENDER_API_URL}/send_command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: messageText })
+            })
+            .then(res => res.json())
+            .then(response => {
+                appendMessage(response.reply, 'bot');
             })
             .catch(err => {
-                console.error("Failed to update Firebase:", err);
-                isUpdating = false;
+                console.error("Render connectivity broken:", err);
+                appendMessage("System Alert: Connection with Render server timed out.", "bot");
             });
         }
 
-        // চ্যাট ইন্টারফেসে মেসেজ পুশ করার ফাংশন
         function appendMessage(text, sender) {
             const chatBox = document.getElementById('chat-box');
             const msgDiv = document.createElement('div');
@@ -246,46 +259,13 @@
             chatBox.scrollTop = chatBox.scrollHeight;
         }
 
-        function checkEnter(e) {
-            if (e.key === 'Enter') sendAICommand();
-        }
+        function checkEnter(e) { if (e.key === 'Enter') sendRenderCommand(); }
 
-        // চ্যাট কমান্ড প্রসেস করার কোর এআই মেকানিজম
-        function sendAICommand() {
-            const input = document.getElementById('cmd-input');
-            const cmd = input.value.trim().toLowerCase();
-            if (!cmd) return;
-
-            appendMessage(input.value, 'user');
-            input.value = '';
-
-            let matched = false;
-            let targetState = cmd.includes("on") ? "ON" : cmd.includes("off") ? "OFF" : null;
-
-            if (targetState) {
-                for (let dev of devices) {
-                    if (dev.keywords.some(keyword => cmd.includes(keyword))) {
-                        matched = true;
-                        const currentState = currentStates[dev.id] || "OFF";
-                        
-                        if (currentState === targetState) {
-                            appendMessage(`AI Terminal: ${dev.name} is already ${targetState}.`, 'system');
-                        } else {
-                            appendMessage(`AI Terminal: Executing command to turn ${targetState} ${dev.name}...`, 'system');
-                            toggleRelay(dev.id, "AI");
-                        }
-                        break;
-                    }
-                }
-            }
-
-            if (!matched) {
-                appendMessage(`AI Terminal: Command not recognized. Use "turn on/off [device name]".`, 'system');
-            }
-        }
-
+        // টাইম ইন্টারভাল সিঙ্ক
         setInterval(fetchDatabase, 2000);
+        setInterval(fetchChatHistory, 3000); // প্রতি ৩ সেকেন্ডে রেন্ডার ব্যাকএন্ড থেকে চ্যাট হিস্ট্রি রিফ্রেশ হবে
         fetchDatabase();
+        fetchChatHistory();
     </script>
 </body>
 </html>
