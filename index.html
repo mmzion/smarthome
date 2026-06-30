@@ -65,7 +65,7 @@
     </div>
 
     <script>
-        // আপনার ফায়ারবেস রিয়েল-টাইম ডেটাবেস URL
+        // ফায়ারবেস রিয়েল-টাইম ডেটাবেস URL
         const FIREBASE_DB_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json";
 
         const devices = [
@@ -76,13 +76,16 @@
         ];
 
         let currentStates = {};
+        let isUpdating = false; // ক্লিকের সময় টাইমার সিঙ্ককে সাময়িক পজ রাখার জন্য লক মেকানিজম
 
         // ডেটাবেস থেকে রিয়েল-টাইম ডাটা ফেচ করার ফাংশন
         function fetchDatabase() {
+            if (isUpdating) return; // যদি ইউজার ক্লিক করে আপডেট প্রসেসে থাকে, তবে ফেচ স্কিপ করবে
+            
             fetch(FIREBASE_DB_URL)
                 .then(res => res.json())
                 .then(data => {
-                    if (!data) return;
+                    if (!data || isUpdating) return;
                     currentStates = data;
                     renderGrid();
                 })
@@ -108,16 +111,18 @@
             });
         }
 
-        // ড্যাশবোর্ড থেকে ক্লিক করে লাইট/ফ্যান অন-অফ করার ফাংশন
+        // ড্যাশবোর্ড থেকে ক্লিক করে লাইট/ফ্যান অন-অফ করার ফাংশন (ইনস্ট্যান্ট রেসপন্স)
         function toggleRelay(relayId) {
+            isUpdating = true; // টাইমার লক অন (যাতে ইনস্ট্যান্ট স্টেট ফ্লিকার না করে)
+            
             const currentState = currentStates[relayId] || "OFF";
             const newState = currentState === "ON" ? "OFF" : "ON";
             
-            // লোকাল স্টেট আপডেট
+            // ১. ইন্টারফেসে বাটন ক্লিক করার সাথে সাথে (০ সেকেন্ডে) স্টেট পরিবর্তন দেখাবে
             currentStates[relayId] = newState;
             renderGrid();
 
-            // ফায়ারবেস ডেটাবেসে সরাসরি প্যাচ (PATCH) রিকোয়েস্ট পাঠানো
+            // ২. ব্যাকগ্রাউন্ডে ফায়ারবেস ডেটাবেসে সরাসরি প্যাচ (PATCH) রিকোয়েস্ট পাঠানো
             const updateData = {};
             updateData[relayId] = newState;
 
@@ -127,12 +132,19 @@
                 body: JSON.stringify(updateData)
             })
             .then(res => res.json())
-            .then(json => console.log(`Successfully toggled ${relayId} to ${newState}`))
-            .catch(err => console.error("Failed to update Firebase:", err));
+            .then(json => {
+                console.log(`Successfully toggled ${relayId} to ${newState}`);
+                // ফায়ারবেস ক্লাউড আপডেট শেষ হওয়ার ৫০০ মিলি-সেকেন্ড পর লক রিলিজ হবে
+                setTimeout(() => { isUpdating = false; }, 500);
+            })
+            .catch(err => {
+                console.error("Failed to update Firebase:", err);
+                isUpdating = false;
+            });
         }
 
-        // প্রতি ১.৫ সেকেন্ড পর পর ডেটাবেস সিঙ্ক হবে (রিয়েল-টাইম রিফ্লেকশন)
-        setInterval(fetchDatabase, 1500);
+        // প্রতি ২ সেকেন্ড পর পর ডেটাবেস অটো সিঙ্ক হবে (ওভারহেড ও ল্যাগ কমাতে ২ সেকেন্ড করা হয়েছে)
+        setInterval(fetchDatabase, 2000);
         fetchDatabase();
     </script>
 </body>
