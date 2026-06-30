@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoomX | Firebase Intelligence Hub</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg: #0f0c29;
+            --purple-main: #9d50bb;
+            --card-bg: rgba(255, 255, 255, 0.05);
+            --text: #f5f5f5;
+            --green-glow: #00ff87;
+            --amber-glow: #ff9f43;
+            --red-glow: #ff2e63;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { 
+            font-family: 'Segoe UI', sans-serif; 
+            background: var(--bg); 
+            background-image: radial-gradient(circle at 50% 50%, #1a1a3a 0%, #0f0c29 100%);
+            color: var(--text); margin: 0; padding: 0;
+            display: flex; flex-direction: column; align-items: center; min-height: 100vh;
+        }
+        header {
+            width: 100%; padding: 20px; text-align: center;
+            background: rgba(0,0,0,0.3); backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px;
+            display: flex; justify-content: center; align-items: center; gap: 15px;
+        }
+        header h1 { margin: 0; font-size: 28px; letter-spacing: 2px; font-weight: 800; color: #fff; }
+        
+        .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
+        
+        .relay-card { 
+            background: var(--card-bg); 
+            border: 1px solid rgba(255,255,255,0.1); 
+            border-radius: 20px; padding: 20px; 
+            text-align: center; transition: all 0.3s ease; 
+            cursor: pointer;
+        }
+        .relay-card i { font-size: 30px; margin-bottom: 10px; display: block; }
+        .relay-card span { font-size: 14px; font-weight: 600; opacity: 0.8; }
+        .relay-card .status { font-size: 11px; margin-top: 5px; display: block; letter-spacing: 1px; }
+        
+        /* ON State Styling */
+        .relay-card.ON { background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main); box-shadow: 0 0 15px rgba(157, 80, 187, 0.3); }
+        .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
+        .relay-card.OFF { opacity: 0.6; }
+        
+        .hint-text { text-align: center; font-size: 12px; color: var(--amber-glow); opacity: 0.8; margin-top: -5px; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>RoomX Dashboard</h1>
+    </header>
+    <div class="container">
+        <div class="hint-text"><i class="fas fa-info-circle"></i> Click on any card to toggle the hardware state instantly</div>
+        <div id="device-grid" class="grid">
+            <div class="relay-card OFF"><span>Loading Sync...</span></div>
+        </div>
+    </div>
+
+    <script>
+        // আপনার ফায়ারবেস রিয়েল-টাইম ডেটাবেস URL
+        const FIREBASE_DB_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json";
+
+        const devices = [
+            { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
+            { id: "relay_2", name: "Dim Light", icon: "fa-moon" },
+            { id: "relay_3", name: "Fan", icon: "fa-fan" },
+            { id: "relay_4", name: "Socket", icon: "fa-plug" }
+        ];
+
+        let currentStates = {};
+
+        // ডেটাবেস থেকে রিয়েল-টাইম ডাটা ফেচ করার ফাংশন
+        function fetchDatabase() {
+            fetch(FIREBASE_DB_URL)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data) return;
+                    currentStates = data;
+                    renderGrid();
+                })
+                .catch(err => console.error("Firebase sync error:", err));
+        }
+
+        // গ্রিড রেন্ডার করার ফাংশন
+        function renderGrid() {
+            const grid = document.getElementById('device-grid');
+            grid.innerHTML = '';
+
+            devices.forEach(dev => {
+                const state = currentStates[dev.id] || "OFF";
+                let spinClass = (state === 'ON' && dev.id === 'relay_3') ? 'fa-spin' : '';
+                
+                grid.innerHTML += `
+                    <div class="relay-card ${state}" onclick="toggleRelay('${dev.id}')">
+                        <i class="fas ${dev.icon} ${spinClass}"></i>
+                        <span>${dev.name}</span>
+                        <span class="status">${state}</span>
+                    </div>
+                `;
+            });
+        }
+
+        // ড্যাশবোর্ড থেকে ক্লিক করে লাইট/ফ্যান অন-অফ করার ফাংশন
+        function toggleRelay(relayId) {
+            const currentState = currentStates[relayId] || "OFF";
+            const newState = currentState === "ON" ? "OFF" : "ON";
+            
+            // লোকাল স্টেট আপডেট
+            currentStates[relayId] = newState;
+            renderGrid();
+
+            // ফায়ারবেস ডেটাবেসে সরাসরি প্যাচ (PATCH) রিকোয়েস্ট পাঠানো
+            const updateData = {};
+            updateData[relayId] = newState;
+
+            fetch(FIREBASE_DB_URL, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updateData)
+            })
+            .then(res => res.json())
+            .then(json => console.log(`Successfully toggled ${relayId} to ${newState}`))
+            .catch(err => console.error("Failed to update Firebase:", err));
+        }
+
+        // প্রতি ১.৫ সেকেন্ড পর পর ডেটাবেস সিঙ্ক হবে (রিয়েল-টাইম রিফ্লেকশন)
+        setInterval(fetchDatabase, 1500);
+        fetchDatabase();
+    </script>
+</body>
+</html>
