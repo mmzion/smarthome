@@ -13,7 +13,7 @@
             --text: #f5f5f5;
             --green-glow: #00ff87;
             --amber-glow: #ff9f43;
-            --red-glow: #ff2e63;
+            --chat-bg: rgba(15, 12, 41, 0.6);
         }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body { 
@@ -27,12 +27,11 @@
             width: 100%; padding: 20px; text-align: center;
             background: rgba(0,0,0,0.3); backdrop-filter: blur(10px);
             border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px;
-            display: flex; justify-content: center; align-items: center; gap: 15px;
         }
-        header h1 { margin: 0; font-size: 28px; letter-spacing: 2px; font-weight: 800; color: #fff; }
+        header h1 { margin: 0; font-size: 26px; letter-spacing: 2px; font-weight: 800; color: #fff; }
         
-        .container { width: 95%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; width: 100%; }
+        .container { width: 95%; max-width: 800px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 15px; width: 100%; }
         
         .relay-card { 
             background: var(--card-bg); 
@@ -41,16 +40,93 @@
             text-align: center; transition: all 0.3s ease; 
             cursor: pointer;
         }
-        .relay-card i { font-size: 30px; margin-bottom: 10px; display: block; }
-        .relay-card span { font-size: 14px; font-weight: 600; opacity: 0.8; }
+        .relay-card i { font-size: 28px; margin-bottom: 10px; display: block; }
+        .relay-card span { font-size: 13px; font-weight: 600; opacity: 0.8; }
         .relay-card .status { font-size: 11px; margin-top: 5px; display: block; letter-spacing: 1px; }
         
-        /* ON State Styling */
         .relay-card.ON { background: rgba(157, 80, 187, 0.2); border-color: var(--purple-main); box-shadow: 0 0 15px rgba(157, 80, 187, 0.3); }
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
         
-        .hint-text { text-align: center; font-size: 12px; color: var(--amber-glow); opacity: 0.8; margin-top: -5px; }
+        /* Chat Widget Styles */
+        .chat-section {
+            background: var(--card-bg);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 320px;
+            width: 100%;
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+        }
+        .chat-header {
+            background: rgba(157, 80, 187, 0.2);
+            padding: 12px 20px;
+            font-size: 14px;
+            font-weight: 600;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .chat-messages {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            background: var(--chat-bg);
+        }
+        .msg {
+            max-width: 80%;
+            padding: 10px 14px;
+            border-radius: 15px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        .msg.system {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            align-self: flex-start;
+            border-bottom-left-radius: 2px;
+            border-left: 3px solid var(--purple-main);
+        }
+        .msg.user {
+            background: var(--purple-main);
+            color: #fff;
+            align-self: flex-end;
+            border-bottom-right-radius: 2px;
+        }
+        .chat-input-area {
+            display: flex;
+            padding: 10px;
+            background: rgba(0,0,0,0.2);
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .chat-input-area input {
+            flex: 1;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            padding: 10px 15px;
+            color: #fff;
+            font-size: 13px;
+            outline: none;
+        }
+        .chat-input-area button {
+            background: var(--purple-main);
+            border: none;
+            color: #fff;
+            padding: 0 18px;
+            margin-left: 8px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .chat-input-area button:hover { background: #853fa0; }
     </style>
 </head>
 <body>
@@ -58,41 +134,58 @@
         <h1>RoomX Dashboard</h1>
     </header>
     <div class="container">
-        <div class="hint-text"><i class="fas fa-info-circle"></i> Click on any card to toggle the hardware state instantly</div>
         <div id="device-grid" class="grid">
-            <div class="relay-card OFF"><span>Loading Sync...</span></div>
+            <div class="relay-card OFF"><span>Connecting Hub...</span></div>
+        </div>
+
+        <div class="chat-section">
+            <div class="chat-header">
+                <i class="fas fa-robot" style="color: var(--purple-main)"></i> AI Intelligence Terminal
+            </div>
+            <div id="chat-box" class="chat-messages">
+                <div class="msg system">System initialized. Try typing commands like "turn on main light" or "turn off fan".</div>
+            </div>
+            <div class="chat-input-area">
+                <input type="text" id="cmd-input" placeholder="Type AI command here..." onkeypress="checkEnter(event)">
+                <button onclick="sendAICommand()"><i class="fas fa-paper-plane"></i></button>
+            </div>
         </div>
     </div>
 
     <script>
-        // ফায়ারবেস রিয়েল-টাইম ডেটাবেস URL
         const FIREBASE_DB_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json";
 
         const devices = [
-            { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
-            { id: "relay_2", name: "Dim Light", icon: "fa-moon" },
-            { id: "relay_3", name: "Fan", icon: "fa-fan" },
-            { id: "relay_4", name: "Socket", icon: "fa-plug" }
+            { id: "relay_1", name: "Main Light", icon: "fa-lightbulb", keywords: ["main light", "light", "bulb"] },
+            { id: "relay_2", name: "Dim Light", icon: "fa-moon", keywords: ["dim light", "dim", "moon"] },
+            { id: "relay_3", name: "Fan", icon: "fa-fan", keywords: ["fan", "cooler"] },
+            { id: "relay_4", name: "Socket", icon: "fa-plug", keywords: ["socket", "plug"] }
         ];
 
         let currentStates = {};
-        let isUpdating = false; // ক্লিকের সময় টাইমার সিঙ্ককে সাময়িক পজ রাখার জন্য লক মেকানিজম
+        let isUpdating = false;
 
-        // ডেটাবেস থেকে রিয়েল-টাইম ডাটা ফেচ করার ফাংশন
         function fetchDatabase() {
-            if (isUpdating) return; // যদি ইউজার ক্লিক করে আপডেট প্রসেসে থাকে, তবে ফেচ স্কিপ করবে
+            if (isUpdating) return;
             
             fetch(FIREBASE_DB_URL)
                 .then(res => res.json())
                 .then(data => {
                     if (!data || isUpdating) return;
+                    
+                    // আগের স্টেটের সাথে তুলনা করে কোনো পরিবর্তন হলে চ্যাটে লগ দেখাবে
+                    devices.forEach(dev => {
+                        if(currentStates[dev.id] && currentStates[dev.id] !== data[dev.id]) {
+                            appendMessage(`System Log: ${dev.name} turned ${data[dev.id]} via sync.`, 'system');
+                        }
+                    });
+
                     currentStates = data;
                     renderGrid();
                 })
                 .catch(err => console.error("Firebase sync error:", err));
         }
 
-        // গ্রিড রেন্ডার করার ফাংশন
         function renderGrid() {
             const grid = document.getElementById('device-grid');
             grid.innerHTML = '';
@@ -111,18 +204,20 @@
             });
         }
 
-        // ড্যাশবোর্ড থেকে ক্লিক করে লাইট/ফ্যান অন-অফ করার ফাংশন (ইনস্ট্যান্ট রেসপন্স)
-        function toggleRelay(relayId) {
-            isUpdating = true; // টাইমার লক অন (যাতে ইনস্ট্যান্ট স্টেট ফ্লিকার না করে)
+        function toggleRelay(relayId, triggerSource = "UI") {
+            isUpdating = true;
             
             const currentState = currentStates[relayId] || "OFF";
             const newState = currentState === "ON" ? "OFF" : "ON";
             
-            // ১. ইন্টারফেসে বাটন ক্লিক করার সাথে সাথে (০ সেকেন্ডে) স্টেট পরিবর্তন দেখাবে
             currentStates[relayId] = newState;
             renderGrid();
 
-            // ২. ব্যাকগ্রাউন্ডে ফায়ারবেস ডেটাবেসে সরাসরি প্যাচ (PATCH) রিকোয়েস্ট পাঠানো
+            if(triggerSource === "UI") {
+                const targetDev = devices.find(d => d.id === relayId);
+                appendMessage(`System Log: ${targetDev.name} shifted to ${newState}.`, 'system');
+            }
+
             const updateData = {};
             updateData[relayId] = newState;
 
@@ -133,8 +228,6 @@
             })
             .then(res => res.json())
             .then(json => {
-                console.log(`Successfully toggled ${relayId} to ${newState}`);
-                // ফায়ারবেস ক্লাউড আপডেট শেষ হওয়ার ৫০০ মিলি-সেকেন্ড পর লক রিলিজ হবে
                 setTimeout(() => { isUpdating = false; }, 500);
             })
             .catch(err => {
@@ -143,7 +236,54 @@
             });
         }
 
-        // প্রতি ২ সেকেন্ড পর পর ডেটাবেস অটো সিঙ্ক হবে (ওভারহেড ও ল্যাগ কমাতে ২ সেকেন্ড করা হয়েছে)
+        // চ্যাট ইন্টারফেসে মেসেজ পুশ করার ফাংশন
+        function appendMessage(text, sender) {
+            const chatBox = document.getElementById('chat-box');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `msg ${sender}`;
+            msgDiv.innerText = text;
+            chatBox.appendChild(msgDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function checkEnter(e) {
+            if (e.key === 'Enter') sendAICommand();
+        }
+
+        // চ্যাট কমান্ড প্রসেস করার কোর এআই মেকানিজম
+        function sendAICommand() {
+            const input = document.getElementById('cmd-input');
+            const cmd = input.value.trim().toLowerCase();
+            if (!cmd) return;
+
+            appendMessage(input.value, 'user');
+            input.value = '';
+
+            let matched = false;
+            let targetState = cmd.includes("on") ? "ON" : cmd.includes("off") ? "OFF" : null;
+
+            if (targetState) {
+                for (let dev of devices) {
+                    if (dev.keywords.some(keyword => cmd.includes(keyword))) {
+                        matched = true;
+                        const currentState = currentStates[dev.id] || "OFF";
+                        
+                        if (currentState === targetState) {
+                            appendMessage(`AI Terminal: ${dev.name} is already ${targetState}.`, 'system');
+                        } else {
+                            appendMessage(`AI Terminal: Executing command to turn ${targetState} ${dev.name}...`, 'system');
+                            toggleRelay(dev.id, "AI");
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (!matched) {
+                appendMessage(`AI Terminal: Command not recognized. Use "turn on/off [device name]".`, 'system');
+            }
+        }
+
         setInterval(fetchDatabase, 2000);
         fetchDatabase();
     </script>
