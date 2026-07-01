@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RoomX | Firebase Intelligence Hub</title>
+    <title>RoomX | Unified Intelligence Hub</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
@@ -12,6 +12,9 @@
             --card-bg: rgba(255, 255, 255, 0.05);
             --text: #f5f5f5;
             --chat-bg: rgba(15, 12, 41, 0.6);
+            --green-glow: #00ff87;
+            --amber-glow: #ff9f43;
+            --red-glow: #ff2e63;
         }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body { 
@@ -25,9 +28,19 @@
             width: 100%; padding: 20px; text-align: center;
             background: rgba(0,0,0,0.3); backdrop-filter: blur(10px);
             border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px;
+            display: flex; justify-content: center; align-items: center; gap: 15px;
         }
         header h1 { margin: 0; font-size: 26px; letter-spacing: 2px; font-weight: 800; color: #fff; }
         
+        /* ⚡ Added ESP32 connection badge to reflect real-time states */
+        .conn-badge {
+            background: rgba(0,0,0,0.4); border: 1px solid var(--red-glow); color: var(--red-glow);
+            padding: 6px 14px; border-radius: 50px; font-size: 12px; font-weight: 600;
+            display: flex; align-items: center; gap: 8px; transition: 0.3s;
+        }
+        .conn-badge.online { border-color: var(--green-glow); color: var(--green-glow); box-shadow: 0 0 10px rgba(0, 255, 135, 0.2); }
+        .conn-badge.streaming { border-color: var(--amber-glow); color: var(--amber-glow); box-shadow: 0 0 10px rgba(255, 159, 67, 0.3); }
+
         .container { width: 95%; max-width: 800px; display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 15px; width: 100%; }
         
@@ -46,6 +59,16 @@
         .relay-card.ON i { color: var(--purple-main); text-shadow: 0 0 10px var(--purple-main); }
         .relay-card.OFF { opacity: 0.6; }
         
+        /* ⚡ Added Live Voice Input Monitor CSS */
+        .audio-monitor-card { 
+            background: rgba(157, 80, 187, 0.1); 
+            border: 1px dashed var(--purple-main); 
+            border-radius: 15px; padding: 12px 20px; 
+            display: flex; align-items: center; justify-content: space-between; gap: 15px; 
+        }
+        .audio-monitor-card span { font-size: 13px; font-weight: 600; color: #ff9f43; }
+        .audio-monitor-card audio { height: 30px; border-radius: 5px; outline: none; }
+
         /* Chat Widget Styles */
         .chat-section {
             background: var(--card-bg);
@@ -53,7 +76,7 @@
             border-radius: 20px;
             display: flex;
             flex-direction: column;
-            height: 320px;
+            height: 350px;
             width: 100%;
             overflow: hidden;
             backdrop-filter: blur(10px);
@@ -66,7 +89,7 @@
             border-bottom: 1px solid rgba(255,255,255,0.1);
             display: flex;
             align-items: center;
-            gap: 8px;
+            justify-content: space-between;
         }
         .chat-messages {
             flex: 1;
@@ -84,7 +107,7 @@
             font-size: 13px;
             line-height: 1.4;
         }
-        .msg.bot {
+        .msg.ai {
             background: rgba(255, 255, 255, 0.1);
             color: #fff;
             align-self: flex-start;
@@ -96,6 +119,14 @@
             color: #fff;
             align-self: flex-end;
             border-bottom-right-radius: 2px;
+        }
+        .msg.system {
+            align-self: center; 
+            background: rgba(255, 159, 67, 0.1); 
+            color: #ff9f43; 
+            border: 1px dashed #ff9f43; 
+            font-size: 11px; 
+            border-radius: 10px;
         }
         .chat-input-area {
             display: flex;
@@ -123,35 +154,43 @@
             cursor: pointer;
             font-size: 14px;
         }
+        @media (max-width: 600px) { header { flex-direction: column; gap: 8px; } .audio-monitor-card { flex-direction: column; text-align: center; } }
     </style>
 </head>
 <body>
     <header>
         <h1>RoomX Dashboard</h1>
+        <div id="conn-status" class="conn-badge"><i class="fas fa-circle"></i> <span id="conn-text">HomeX Disconnected</span></div>
     </header>
+    
     <div class="container">
         <div id="device-grid" class="grid">
             <div class="relay-card OFF"><span>Syncing Devices...</span></div>
         </div>
 
+        <div class="audio-monitor-card">
+            <span><i class="fas fa-headphones-simple"></i> Live Voice Input Track (16kHz WAV):</span>
+            <audio id="audio-player" controls src="/get-voice-track"></audio>
+        </div>
+
         <div class="chat-section">
             <div class="chat-header">
-                <i class="fas fa-server" style="color: var(--purple-main)"></i> Render Live Backend Terminal
+                <div><i class="fas fa-brain" style="color: var(--purple-main)"></i> Unified Intelligence Terminal</div>
             </div>
             <div id="chat-box" class="chat-messages">
-                <div class="msg bot">Connecting to smarthome-dgcp.onrender.com...</div>
+                <div class="msg ai">Welcome back! Low-Latency Qwen & Piper Pipeline Active.</div>
             </div>
             <div class="chat-input-area">
-                <input type="text" id="cmd-input" placeholder="Send intelligence command to Render backend..." onkeypress="checkEnter(event)">
-                <button onclick="sendRenderCommand()"><i class="fas fa-paper-plane"></i></button>
+                <input type="text" id="cmd-input" placeholder="Type a message or hardware command..." onkeypress="checkEnter(event)">
+                <button id="send-btn" onclick="sendManualCommand()"><i class="fas fa-paper-plane"></i></button>
             </div>
         </div>
     </div>
 
     <script>
-        const FIREBASE_DB_URL = "https://homebymmzion-default-rtdb.firebaseio.com/devices.json";
-        const RENDER_API_URL = "https://smarthome-dgcp.onrender.com";
-
+        // ⚡ URLs are matched with the local/cloud deployment architecture
+        const FIREBASE_DB_URL = "{{ fb_url }}" || "https://homebymmzion-default-rtdb.firebaseio.com/devices.json";
+        
         const devices = [
             { id: "relay_1", name: "Main Light", icon: "fa-lightbulb" },
             { id: "relay_2", name: "Dim Light", icon: "fa-moon" },
@@ -161,8 +200,9 @@
 
         let currentStates = {};
         let isUpdating = false;
+        let isSending = false;
 
-        // ফায়ারবেস থেকে রিয়েল-টাইম স্টেট রেন্ডার করা
+        // ഫയർബേസ് സിങ്ക്
         function fetchDatabase() {
             if (isUpdating) return;
             fetch(FIREBASE_DB_URL)
@@ -172,7 +212,7 @@
                     currentStates = data;
                     renderGrid();
                 })
-                .catch(err => console.error("Firebase sync error:", err));
+                .catch(err => console.log("Firebase sync waiting..."));
         }
 
         function renderGrid() {
@@ -212,60 +252,103 @@
             .catch(err => { console.error(err); isUpdating = false; });
         }
 
-        // রেন্ডার ক্লাউড সার্ভার থেকে চ্যাট লগের ডেটা আনা
-        function fetchChatHistory() {
-            fetch(`${RENDER_API_URL}/get_messages`)
+        // ⚡ Aligned with Flask endpoint to pull real-time hardware pings and voice tracks
+        function fetchSystemEvents() {
+            fetch('/get-latest-events')
                 .then(res => res.json())
-                .then(messages => {
+                .then(data => {
+                    const badge = document.getElementById('conn-status');
+                    const text = document.getElementById('conn-text');
                     const chatBox = document.getElementById('chat-box');
-                    chatBox.innerHTML = ''; 
-                    messages.forEach(msg => {
-                        appendMessage(msg.text, msg.sender); // sender: 'user' অথবা 'bot'
-                    });
-                })
-                .catch(err => console.error("Render server sync error:", err));
+                    const audioPlayer = document.getElementById('audio-player');
+                    
+                    badge.classList.remove('online', 'streaming');
+                    if(data.state === "Streaming") { 
+                        badge.classList.add('streaming'); 
+                        text.innerText = "Voice Transmit Active..."; 
+                    } else if(data.state === "Online") { 
+                        badge.classList.add('online'); 
+                        text.innerText = "HomeX Connected"; 
+                    } else { 
+                        text.innerText = "HomeX Disconnected"; 
+                    }
+
+                    if (data.new_messages && data.new_messages.length > 0) {
+                        data.new_messages.forEach(msg => {
+                            if(msg.type === 'voice_start') {
+                                if(!chatBox.innerHTML.includes("Processing Incoming Audio...")) {
+                                    chatBox.innerHTML += '<div class="msg system" id="proc-msg"><i class="fas fa-microphone"></i> Server Processing Incoming Audio...</div>';
+                                }
+                            } else {
+                                const procMsg = document.getElementById('proc-msg');
+                                if(procMsg) procMsg.remove();
+
+                                appendMessage(msg.user, 'user', true);
+                                appendMessage(msg.ai, 'ai');
+                                audioPlayer.load(); // Reload audio element to catch the latest wav payload
+                            }
+                        });
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                    }
+                }).catch(err => console.log("System sync waiting..."));
         }
 
-        // চ্যাট বক্স থেকে রেন্ডার ক্লাউডে সরাসরি কমান্ড পোস্ট করা
-        function sendRenderCommand() {
+        // ⚡ Combined manual input into `/voice-command` endpoint to streamline Flask orchestration
+        function sendManualCommand() {
             const input = document.getElementById('cmd-input');
-            const messageText = input.value.trim();
-            if (!messageText) return;
+            const btn = document.getElementById('send-btn');
+            const cmd = input.value.trim();
+            if (!cmd || isSending) return;
 
-            appendMessage(messageText, 'user');
+            isSending = true; input.disabled = true; btn.disabled = true;
+            appendMessage(cmd, 'user');
             input.value = '';
 
-            fetch(`${RENDER_API_URL}/send_command`, {
+            fetch('/voice-command', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: messageText })
+                body: JSON.stringify({ text: cmd })
             })
             .then(res => res.json())
-            .then(response => {
-                appendMessage(response.reply, 'bot');
+            .then(data => {
+                const aiReply = data.reply || "Command executed.";
+                appendMessage(aiReply, 'ai');
+                input.disabled = false; btn.disabled = false; isSending = false;
+                setTimeout(() => input.focus(), 50);
+                fetchDatabase();
             })
             .catch(err => {
-                console.error("Render connectivity broken:", err);
-                appendMessage("System Alert: Connection with Render server timed out.", "bot");
+                console.error("Connectivity broken:", err);
+                appendMessage("System Alert: Connection with server timed out.", "ai");
+                input.disabled = false; btn.disabled = false; isSending = false;
             });
         }
 
-        function appendMessage(text, sender) {
+        function appendMessage(text, sender, isVoice = false) {
             const chatBox = document.getElementById('chat-box');
+            
+            // Duplicate prevention check
+            if (sender === 'ai' && chatBox.innerHTML.includes(text)) return;
+
             const msgDiv = document.createElement('div');
             msgDiv.className = `msg ${sender}`;
-            msgDiv.innerText = text;
+            if(isVoice) {
+                msgDiv.innerHTML = `<i class="fas fa-microphone" style="font-size:10px; margin-right:5px;"></i> ${text}`;
+            } else {
+                msgDiv.innerText = text;
+            }
             chatBox.appendChild(msgDiv);
             chatBox.scrollTop = chatBox.scrollHeight;
         }
 
-        function checkEnter(e) { if (e.key === 'Enter') sendRenderCommand(); }
+        function checkEnter(e) { if (e.key === 'Enter') sendManualCommand(); }
 
-        // টাইম ইন্টারভাল সিঙ্ক
-        setInterval(fetchDatabase, 2000);
-        setInterval(fetchChatHistory, 3000); // প্রতি ৩ সেকেন্ডে রেন্ডার ব্যাকএন্ড থেকে চ্যাট হিস্ট্রি রিফ্রেশ হবে
+        // Optimized Intervals
+        setInterval(fetchDatabase, 1500);
+        setInterval(fetchSystemEvents, 1200); 
         fetchDatabase();
-        fetchChatHistory();
+        fetchSystemEvents();
+        document.getElementById('cmd-input').focus();
     </script>
 </body>
 </html>
